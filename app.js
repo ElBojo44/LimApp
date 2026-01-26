@@ -1,6 +1,6 @@
-// ===== App Limones (Ventas + Dashboard Mensual) =====
+// ===== App Limones (Ventas + Gastos + Dashboard Mensual) =====
 // Requiere: storage.js cargado ANTES que app.js
-// storage.js debe proveer: getVentas(), addVenta(), makeId()
+// storage.js debe proveer: getVentas(), addVenta(), getGastos(), addGasto(), makeId()
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("🍋 App Limones: cargó app.js");
@@ -8,35 +8,39 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function initApp() {
-  const form = document.getElementById("ventaForm");
-  if (!form) {
+  // ===== Ventas =====
+  const ventaForm = document.getElementById("ventaForm");
+  if (!ventaForm) {
     console.error("No encuentro #ventaForm. Revisa index.html");
     return;
   }
+  ventaForm.addEventListener("submit", onSubmitVenta);
 
-  form.addEventListener("submit", onSubmitVenta);
+  const ventaFecha = document.getElementById("ventaFecha");
+  if (ventaFecha && !ventaFecha.value) ventaFecha.value = toISODate(new Date());
 
-  // Default fecha = hoy
-  const fechaInput = document.getElementById("ventaFecha");
-  if (fechaInput && !fechaInput.value) fechaInput.value = toISODate(new Date());
+  // ===== Gastos =====
+  const gastoForm = document.getElementById("gastoForm");
+  if (gastoForm) {
+    gastoForm.addEventListener("submit", onSubmitGasto);
+    const gastoFecha = document.getElementById("gastoFecha");
+    if (gastoFecha && !gastoFecha.value) gastoFecha.value = toISODate(new Date());
+  } else {
+    console.warn("No encuentro #gastoForm (ok si aún no agregaste gastos al index.html).");
+  }
 
+  // Dashboard
   initDashboard();
 
+  // Render inicial
   await renderVentas();
+  await renderGastos();
   await renderDashboard();
 }
 
-// Form gastos
-const gastoForm = document.getElementById("gastoForm");
-if (gastoForm) gastoForm.addEventListener("submit", onSubmitGasto);
-
-// Default fecha gastos = hoy
-const gastoFecha = document.getElementById("gastoFecha");
-if (gastoFecha && !gastoFecha.value) gastoFecha.value = toISODate(new Date());
-
-await renderGastos();
-
-
+// =====================
+//        VENTAS
+// =====================
 async function onSubmitVenta(e) {
   e.preventDefault();
 
@@ -68,7 +72,6 @@ async function onSubmitVenta(e) {
 
     await addVenta(venta);
 
-    // Reset parcial (dejamos la fecha)
     document.getElementById("ventaLibras").value = "";
     document.getElementById("ventaPrecio").value = "";
     document.getElementById("ventaCliente").value = "";
@@ -77,8 +80,8 @@ async function onSubmitVenta(e) {
     await renderVentas();
     await renderDashboard();
   } catch (err) {
-    console.error(err);
-    alert("No pude guardar en Google Sheets. Mira la consola (F12).");
+    console.error("Guardar venta error:", err);
+    alert("No pude guardar la venta en Google Sheets. Abre F12 → Console para ver el error.");
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -120,18 +123,21 @@ async function renderVentas() {
       list.appendChild(li);
     });
   } catch (err) {
-    console.error(err);
+    console.error("Cargar ventas error:", err);
     list.innerHTML = "<li>Error cargando ventas. Revisa consola (F12).</li>";
   }
 }
 
+// =====================
+//        GASTOS
+// =====================
 async function onSubmitGasto(e) {
   e.preventDefault();
 
-  const fecha = document.getElementById("gastoFecha").value;
-  const monto = Number(document.getElementById("gastoMonto").value);
-  const categoria = document.getElementById("gastoCategoria").value;
-  const nota = document.getElementById("gastoNota").value.trim();
+  const fecha = document.getElementById("gastoFecha")?.value;
+  const monto = Number(document.getElementById("gastoMonto")?.value);
+  const categoria = document.getElementById("gastoCategoria")?.value;
+  const nota = document.getElementById("gastoNota")?.value?.trim() || "";
 
   if (!fecha || !categoria || !isFinite(monto) || monto <= 0) {
     alert("Revisa: fecha, categoría y monto (>0).");
@@ -143,8 +149,8 @@ async function onSubmitGasto(e) {
     fecha,
     monto: round2(monto),
     categoria,
-    nota: nota || "",
-    createdAt: Date.now(),
+    nota,
+    createdAt: Date.now()
   };
 
   const btn = e.submitter;
@@ -160,8 +166,8 @@ async function onSubmitGasto(e) {
     await renderGastos();
     await renderDashboard();
   } catch (err) {
-    console.error(err);
-    alert("No pude guardar el gasto en Google Sheets. Mira la consola (F12).");
+    console.error("Guardar gasto error:", err);
+    alert("No pude guardar el gasto en Google Sheets. Abre F12 → Console para ver el error.");
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -175,8 +181,8 @@ async function renderGastos() {
 
   try {
     const gastos = await getGastos();
-    list.innerHTML = "";
 
+    list.innerHTML = "";
     if (!gastos || gastos.length === 0) {
       list.innerHTML = "<li>No hay gastos todavía.</li>";
       return;
@@ -184,7 +190,7 @@ async function renderGastos() {
 
     gastos.slice(0, 15).forEach((g) => {
       const li = document.createElement("li");
-      li.className = "ventaItem"; // reutilizamos estilo
+      li.className = "ventaItem";
 
       li.innerHTML = `
         <div class="ventaTop">
@@ -199,22 +205,21 @@ async function renderGastos() {
       list.appendChild(li);
     });
   } catch (err) {
-    console.error(err);
+    console.error("Cargar gastos error:", err);
     list.innerHTML = "<li>Error cargando gastos. Revisa consola (F12).</li>";
   }
 }
 
-
-// ===== DASHBOARD =====
+// =====================
+//      DASHBOARD
+// =====================
 function initDashboard() {
   const inputMes = document.getElementById("dashMes");
   if (!inputMes) return;
 
-  // Mes actual por defecto
   inputMes.value = toISOMonth(new Date());
   inputMes.addEventListener("change", () => renderDashboard());
 
-  // Primer render (async)
   renderDashboard();
 }
 
@@ -222,7 +227,7 @@ async function renderDashboard() {
   const mesEl = document.getElementById("dashMes");
   if (!mesEl) return;
 
-  const mes = mesEl.value; // YYYY-MM
+  const mes = mesEl.value;
 
   try {
     const [ventas, gastos] = await Promise.all([getVentas(), getGastos()]);
@@ -252,18 +257,18 @@ async function renderDashboard() {
     const precioProm = totalLibras > 0 ? totalVentas / totalLibras : 0;
     const neto = totalVentas - totalGastos;
 
-    // básicos (ya existen)
-    document.getElementById("dashVentas").textContent = `$${totalVentas.toFixed(2)}`;
-    document.getElementById("dashLibras").textContent = totalLibras.toFixed(2);
-    document.getElementById("dashPrecio").textContent = `$${precioProm.toFixed(2)}`;
-    document.getElementById("dashCount").textContent = countVentas;
+    setText("dashVentas", `$${totalVentas.toFixed(2)}`);
+    setText("dashLibras", totalLibras.toFixed(2));
+    setText("dashPrecio", `$${precioProm.toFixed(2)}`);
+    setText("dashCount", String(countVentas));
 
-    // extras (si no existen, los creamos)
     ensureDashExtra();
+    setText("dashGastos", `-$${totalGastos.toFixed(2)}`);
+    setText("dashNeto", `$${neto.toFixed(2)}`);
+    setText("dashCountGastos", String(countGastos));
 
-    document.getElementById("dashGastos").textContent = `-$${totalGastos.toFixed(2)}`;
-    document.getElementById("dashNeto").textContent = `$${neto.toFixed(2)}`;
-    document.getElementById("dashCountGastos").textContent = countGastos;
+    const netoEl = document.getElementById("dashNeto");
+    if (netoEl) netoEl.style.color = neto >= 0 ? "#3ddc84" : "#ff5c5c";
   } catch (err) {
     console.error("Dashboard error:", err);
   }
@@ -292,8 +297,14 @@ function ensureDashExtra() {
   grid.appendChild(countGBox);
 }
 
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
 
-// ===== Utils =====
+// =====================
+//         Utils
+// =====================
 function round2(n) {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
@@ -312,7 +323,6 @@ function toISOMonth(d) {
 }
 
 function formatDate(iso) {
-  // iso: YYYY-MM-DD
   if (!iso) return "";
   const [y, m, d] = String(iso).split("-").map(Number);
   const dt = new Date(y, (m || 1) - 1, d || 1);
