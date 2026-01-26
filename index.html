@@ -91,6 +91,55 @@
     </section>
   </main>
 
+<!-- FORM GASTOS -->
+<section class="card">
+  <h2>💸 Registrar gasto</h2>
+
+  <form id="gastoForm" autocomplete="off">
+    <div class="row">
+      <label>
+        Fecha
+        <input id="gastoFecha" type="date" required />
+      </label>
+
+      <label>
+        Monto
+        <input id="gastoMonto" type="number" min="0" step="0.01" required />
+      </label>
+    </div>
+
+    <div class="row">
+      <label>
+        Categoría
+        <select id="gastoCategoria" required>
+          <option value="">Selecciona…</option>
+          <option>Mano de obra</option>
+          <option>Combustible</option>
+          <option>Insumos</option>
+          <option>Mantenimiento</option>
+          <option>Transporte</option>
+          <option>Herramientas</option>
+          <option>Otros</option>
+        </select>
+      </label>
+
+      <label>
+        Nota (opcional)
+        <input id="gastoNota" type="text" placeholder="Ej: gasolina, trimmer, fertilizante…" />
+      </label>
+    </div>
+
+    <button type="submit">Guardar gasto</button>
+  </form>
+</section>
+
+<!-- LISTA GASTOS -->
+<section class="card">
+  <h2>Últimos gastos</h2>
+  <ul id="gastosList"></ul>
+</section>
+
+
   <!-- IMPORTANTE: orden correcto -->
   <script src="storage.js"></script>
   <script src="app.js"></script>

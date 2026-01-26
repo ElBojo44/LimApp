@@ -26,6 +26,17 @@ async function initApp() {
   await renderDashboard();
 }
 
+// Form gastos
+const gastoForm = document.getElementById("gastoForm");
+if (gastoForm) gastoForm.addEventListener("submit", onSubmitGasto);
+
+// Default fecha gastos = hoy
+const gastoFecha = document.getElementById("gastoFecha");
+if (gastoFecha && !gastoFecha.value) gastoFecha.value = toISODate(new Date());
+
+await renderGastos();
+
+
 async function onSubmitVenta(e) {
   e.preventDefault();
 
@@ -114,6 +125,86 @@ async function renderVentas() {
   }
 }
 
+async function onSubmitGasto(e) {
+  e.preventDefault();
+
+  const fecha = document.getElementById("gastoFecha").value;
+  const monto = Number(document.getElementById("gastoMonto").value);
+  const categoria = document.getElementById("gastoCategoria").value;
+  const nota = document.getElementById("gastoNota").value.trim();
+
+  if (!fecha || !categoria || !isFinite(monto) || monto <= 0) {
+    alert("Revisa: fecha, categoría y monto (>0).");
+    return;
+  }
+
+  const gasto = {
+    id: makeId(),
+    fecha,
+    monto: round2(monto),
+    categoria,
+    nota: nota || "",
+    createdAt: Date.now(),
+  };
+
+  const btn = e.submitter;
+  try {
+    if (btn) btn.disabled = true;
+
+    await addGasto(gasto);
+
+    document.getElementById("gastoMonto").value = "";
+    document.getElementById("gastoCategoria").value = "";
+    document.getElementById("gastoNota").value = "";
+
+    await renderGastos();
+    await renderDashboard();
+  } catch (err) {
+    console.error(err);
+    alert("No pude guardar el gasto en Google Sheets. Mira la consola (F12).");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function renderGastos() {
+  const list = document.getElementById("gastosList");
+  if (!list) return;
+
+  list.innerHTML = "<li>Cargando…</li>";
+
+  try {
+    const gastos = await getGastos();
+    list.innerHTML = "";
+
+    if (!gastos || gastos.length === 0) {
+      list.innerHTML = "<li>No hay gastos todavía.</li>";
+      return;
+    }
+
+    gastos.slice(0, 15).forEach((g) => {
+      const li = document.createElement("li");
+      li.className = "ventaItem"; // reutilizamos estilo
+
+      li.innerHTML = `
+        <div class="ventaTop">
+          <strong>${formatDate(g.fecha)}</strong>
+          <span class="ventaTotal">-$${Number(g.monto || 0).toFixed(2)}</span>
+        </div>
+        <div class="ventaMeta">
+          ${escapeHtml(g.categoria || "")}
+          ${g.nota ? ` — ${escapeHtml(g.nota)}` : ""}
+        </div>
+      `;
+      list.appendChild(li);
+    });
+  } catch (err) {
+    console.error(err);
+    list.innerHTML = "<li>Error cargando gastos. Revisa consola (F12).</li>";
+  }
+}
+
+
 // ===== DASHBOARD =====
 function initDashboard() {
   const inputMes = document.getElementById("dashMes");
@@ -134,35 +225,73 @@ async function renderDashboard() {
   const mes = mesEl.value; // YYYY-MM
 
   try {
-    const ventas = await getVentas();
+    const [ventas, gastos] = await Promise.all([getVentas(), getGastos()]);
 
     let totalVentas = 0;
     let totalLibras = 0;
-    let count = 0;
+    let countVentas = 0;
 
     (ventas || []).forEach((v) => {
       if (String(v.fecha || "").startsWith(mes)) {
         totalVentas += Number(v.total) || 0;
         totalLibras += Number(v.libras) || 0;
-        count++;
+        countVentas++;
+      }
+    });
+
+    let totalGastos = 0;
+    let countGastos = 0;
+
+    (gastos || []).forEach((g) => {
+      if (String(g.fecha || "").startsWith(mes)) {
+        totalGastos += Number(g.monto) || 0;
+        countGastos++;
       }
     });
 
     const precioProm = totalLibras > 0 ? totalVentas / totalLibras : 0;
+    const neto = totalVentas - totalGastos;
 
-    const elVentas = document.getElementById("dashVentas");
-    const elLibras = document.getElementById("dashLibras");
-    const elPrecio = document.getElementById("dashPrecio");
-    const elCount = document.getElementById("dashCount");
+    // básicos (ya existen)
+    document.getElementById("dashVentas").textContent = `$${totalVentas.toFixed(2)}`;
+    document.getElementById("dashLibras").textContent = totalLibras.toFixed(2);
+    document.getElementById("dashPrecio").textContent = `$${precioProm.toFixed(2)}`;
+    document.getElementById("dashCount").textContent = countVentas;
 
-    if (elVentas) elVentas.textContent = `$${totalVentas.toFixed(2)}`;
-    if (elLibras) elLibras.textContent = totalLibras.toFixed(2);
-    if (elPrecio) elPrecio.textContent = `$${precioProm.toFixed(2)}`;
-    if (elCount) elCount.textContent = count;
+    // extras (si no existen, los creamos)
+    ensureDashExtra();
+
+    document.getElementById("dashGastos").textContent = `-$${totalGastos.toFixed(2)}`;
+    document.getElementById("dashNeto").textContent = `$${neto.toFixed(2)}`;
+    document.getElementById("dashCountGastos").textContent = countGastos;
   } catch (err) {
     console.error("Dashboard error:", err);
   }
 }
+
+function ensureDashExtra() {
+  if (document.getElementById("dashGastos")) return;
+
+  const grid = document.querySelector(".dashGrid");
+  if (!grid) return;
+
+  const gastosBox = document.createElement("div");
+  gastosBox.className = "dashItem";
+  gastosBox.innerHTML = `<span class="dashLabel">Gastos</span><strong id="dashGastos">-$0.00</strong>`;
+
+  const netoBox = document.createElement("div");
+  netoBox.className = "dashItem";
+  netoBox.innerHTML = `<span class="dashLabel">Neto</span><strong id="dashNeto">$0.00</strong>`;
+
+  const countGBox = document.createElement("div");
+  countGBox.className = "dashItem";
+  countGBox.innerHTML = `<span class="dashLabel"># Gastos</span><strong id="dashCountGastos">0</strong>`;
+
+  grid.appendChild(gastosBox);
+  grid.appendChild(netoBox);
+  grid.appendChild(countGBox);
+}
+
 
 // ===== Utils =====
 function round2(n) {
