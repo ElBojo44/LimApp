@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>App Limones</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>🍋 Ventas</h1>
+
+    <section class="card">
+      <h2>Registrar venta</h2>
+<section class="card" id="dashboard">
+  <h2>📊 Resumen mensual</h2>
+
+  <div class="dashRow">
+    <label>
+      Mes
+      <input type="month" id="dashMes" />
+    </label>
+  </div>
+
+  <div class="dashGrid">
+    <div class="dashItem">
+      <span class="dashLabel">Ventas</span>
+      <strong id="dashVentas">$0.00</strong>
+    </div>
+
+    <div class="dashItem">
+      <span class="dashLabel">Libras</span>
+      <strong id="dashLibras">0</strong>
+    </div>
+
+    <div class="dashItem">
+      <span class="dashLabel">Precio promedio</span>
+      <strong id="dashPrecio">$0.00</strong>
+    </div>
+
+    <div class="dashItem">
+      <span class="dashLabel"># Ventas</span>
+      <strong id="dashCount">0</strong>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>💸 Registrar gasto</h2>
+
+  <form id="gastoForm" autocomplete="off">
+    <div class="row">
+      <label>
+        Fecha
+        <input id="gastoFecha" type="date" required />
+      </label>
+
+      <label>
+        Monto
+        <input id="gastoMonto" type="number" min="0" step="0.01" required />
+      </label>
+    </div>
+
+    <div class="row">
+      <label>
+        Categoría
+        <select id="gastoCategoria" required>
+          <option value="">Selecciona…</option>
+          <option>Mano de obra</option>
+          <option>Combustible</option>
+          <option>Insumos</option>
+          <option>Mantenimiento</option>
+          <option>Transporte</option>
+          <option>Herramientas</option>
+          <option>Otros</option>
+        </select>
+      </label>
+
+      <label>
+        Suplidor / Nota
+        <input id="gastoNota" type="text" placeholder="Ej: gasolina, trimmer, fertilizante…" />
+      </label>
+    </div>
+
+    <button type="submit">Guardar gasto</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Últimos gastos</h2>
+  <ul id="gastosList"></ul>
+</section>
+
+
+      <form id="ventaForm" autocomplete="off">
+        <div class="row">
+          <label>
+            Fecha
+            <input id="ventaFecha" type="date" required />
+          </label>
+
+          <label>
+            Libras
+            <input id="ventaLibras" type="number" min="0" step="0.01" required />
+          </label>
+        </div>
+
+        <div class="row">
+          <label>
+            Precio por libra
+            <input id="ventaPrecio" type="number" min="0" step="0.01" required />
+          </label>
+
+          <label>
+            Cliente
+            <input id="ventaCliente" type="text" placeholder="Ej: Don Juan / Exportador" required />
+          </label>
+        </div>
+
+        <label>
+          Nota (opcional)
+          <input id="ventaNota" type="text" placeholder="Ej: corte #12, calidad A, etc." />
+        </label>
+
+        <button type="submit">Guardar venta</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Últimas ventas</h2>
+      <ul id="ventasList"></ul>
+    </section>
+  </main>
+
+  <script src="storage.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+* { box-sizing: border-box; }
+body { font-family: system-ui, Arial; margin: 0; background: #0f1115; color: #e8e8e8; }
+.container { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { margin: 0 0 16px; }
+.card { background: #171a21; border: 1px solid #2a2f3a; border-radius: 12px; padding: 16px; margin: 12px 0; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+label { display: grid; gap: 6px; margin: 10px 0; font-size: 14px; }
+input { padding: 10px; border-radius: 10px; border: 1px solid #2a2f3a; background: #0f1115; color: #e8e8e8; }
+button { margin-top: 10px; padding: 12px 14px; border: 0; border-radius: 10px; background: #2f6fed; color: white; font-weight: 700; cursor: pointer; }
+button:hover { opacity: .92; }
+ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.ventaItem { padding: 12px; border-radius: 12px; border: 1px solid #2a2f3a; background: #10131a; }
+.ventaTop { display: flex; justify-content: space-between; align-items: center; }
+.ventaTotal { font-weight: 800; }
+.ventaMeta { margin-top: 6px; opacity: .9; font-size: 14px; }
+.ventaNota { margin-top: 6px; opacity: .8; font-style: italic; }
+@media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
+.dashRow {
+  margin-bottom: 12px;
+}
+
+.dashGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.dashItem {
+  background: #0f1115;
+  border: 1px solid #2a2f3a;
+  border-radius: 12px;
+  padding: 14px;
+  text-align: center;
+}
+
+.dashLabel {
+  font-size: 13px;
+  opacity: .7;
+}
+
+@media (max-width: 700px) {
+  .dashGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
