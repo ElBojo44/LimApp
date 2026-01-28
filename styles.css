@@ -1,31 +1,154 @@
 * { box-sizing: border-box; }
-body { font-family: system-ui, Arial; margin: 0; background: #0f1115; color: #e8e8e8; }
-.container { max-width: 900px; margin: 0 auto; padding: 20px; }
-h1 { margin: 0 0 16px; }
-.card { background: #171a21; border: 1px solid #2a2f3a; border-radius: 12px; padding: 16px; margin: 12px 0; }
-.row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-label { display: grid; gap: 6px; margin: 10px 0; font-size: 14px; }
-input { padding: 10px; border-radius: 10px; border: 1px solid #2a2f3a; background: #0f1115; color: #e8e8e8; }
-button { margin-top: 10px; padding: 12px 14px; border: 0; border-radius: 10px; background: #2f6fed; color: white; font-weight: 700; cursor: pointer; }
-button:hover { opacity: .92; }
-ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
-.ventaItem { padding: 12px; border-radius: 12px; border: 1px solid #2a2f3a; background: #10131a; }
-.ventaTop { display: flex; justify-content: space-between; align-items: center; }
-.ventaTotal { font-weight: 800; }
-.ventaMeta { margin-top: 6px; opacity: .9; font-size: 14px; }
-.ventaNota { margin-top: 6px; opacity: .8; font-style: italic; }
-@media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
-.dashRow {
-  margin-bottom: 12px;
+
+body{
+  font-family: system-ui, Arial, sans-serif;
+  margin: 0;
+  background: #0f1115;
+  color: #e8e8e8;
 }
 
-.dashGrid {
+.container{
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+h1{
+  margin: 0 0 14px;
+}
+
+/* ===== Cards ===== */
+.card{
+  background: #171a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 14px;
+  padding: 16px;
+  margin: 12px 0;
+  box-shadow: 0 10px 40px rgba(0,0,0,.25);
+}
+
+.muted{
+  opacity: .75;
+  margin: 0;
+}
+
+/* ===== Tabs ===== */
+.tabs{
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 16px;
+}
+
+.tabBtn{
+  border: 1px solid #2a2f3a;
+  background: #10131a;
+  color: #e8e8e8;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.tabBtn.active{
+  background: #2f6fed;
+  border-color: #2f6fed;
+}
+
+.view{ display: none; }
+.view.activeView{ display: block; }
+
+/* ===== Forms ===== */
+.row{
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+label{
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  width: 100%;
+  min-width: 0;
+  margin: 10px 0;
+}
+
+input, select{
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #2a2f3a;
+  background: #0f1115;
+  color: #e8e8e8;
+  width: 100%;
+  min-width: 0;
+}
+
+button{
+  margin-top: 10px;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: #2f6fed;
+  color: white;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+button:hover{ opacity: .92; }
+button:disabled{ opacity: .6; cursor: not-allowed; }
+
+/* ===== Lists ===== */
+ul{
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.ventaItem{
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #2a2f3a;
+  background: #10131a;
+}
+
+.ventaTop{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 12px;
 }
 
-.dashItem {
+.ventaTotal{
+  font-weight: 900;
+}
+
+.ventaMeta{
+  margin-top: 6px;
+  opacity: .9;
+  font-size: 14px;
+}
+
+.ventaNota{
+  margin-top: 6px;
+  opacity: .8;
+  font-style: italic;
+}
+
+/* ===== Dashboard ===== */
+.dashRow{ margin-bottom: 12px; }
+
+.dashGrid{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dashItem{
   background: #0f1115;
   border: 1px solid #2a2f3a;
   border-radius: 12px;
@@ -33,55 +156,82 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
   text-align: center;
 }
 
-.dashLabel {
+.dashLabel{
   font-size: 13px;
+  opacity: .7;
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* ===== Table ===== */
+.dashTableWrap{ margin-top: 14px; }
+.dashSub{ margin: 10px 0; font-size: 14px; opacity: .9; }
+
+.dashTable{
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid #2a2f3a;
+}
+
+.dashTable th, .dashTable td{
+  padding: 10px 12px;
+  border-bottom: 1px solid #2a2f3a;
+  font-size: 14px;
+}
+
+.dashTable thead th{
+  background: #10131a;
+  opacity: .95;
+}
+
+.dashTable tbody tr:last-child td{ border-bottom: none; }
+
+/* ===== Mini catalog forms ===== */
+.miniGrid{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.miniForm{
+  background: #10131a;
+  border: 1px solid #2a2f3a;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.miniTitle{
+  font-weight: 900;
+  margin-bottom: 8px;
+  opacity: .9;
+}
+
+.miniForm input{
+  margin: 6px 0;
+}
+
+.miniForm button{
+  width: 100%;
+}
+
+.softHr{
+  border: none;
+  height: 1px;
+  background: #2a2f3a;
+  margin: 14px 0;
   opacity: .7;
 }
 
-@media (max-width: 700px) {
-  .dashGrid {
-    grid-template-columns: repeat(2, 1fr);
-  }
+/* ===== Responsive ===== */
+@media (max-width: 900px){
+  .dashGrid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .miniGrid{ grid-template-columns: 1fr; }
 }
 
-select {
-  padding: 10px;
-  border-radius: 10px;
-  border: 1px solid #2a2f3a;
-  background: #0f1115;
-  color: #e8e8e8;
-}
-/* --- Fix layout forms (ventas + gastos) --- */
-.row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  align-items: end;
-}
-
-label {
-  width: 100%;
-  min-width: 0;
-}
-
-input, select, button {
-  width: 100%;
-  min-width: 0;
-}
-
-/* Opcional: que el botón no ocupe toda la fila si no quieres */
-button {
-  width: auto;
-  padding-left: 18px;
-  padding-right: 18px;
-}
-
-/* En móvil: una sola columna */
-@media (max-width: 700px) {
-  .row {
-    grid-template-columns: 1fr;
-  }
-  button {
-    width: 100%;
-  }
+@media (max-width: 700px){
+  .row{ grid-template-columns: 1fr; }
+  button{ width: 100%; }
 }

@@ -2,147 +2,461 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>🍋 App Limones</title>
-
   <link rel="stylesheet" href="styles.css" />
 </head>
+
 <body>
-
   <main class="container">
-    <h1>🍋 Ventas</h1>
+    <h1>🍋 App Limones</h1>
 
-    <!-- DASHBOARD -->
-    <section class="card" id="dashboard">
-      <h2>📊 Resumen mensual</h2>
+    <!-- Tabs -->
+    <nav class="tabs">
+      <button class="tabBtn active" data-view="viewVentas">Ventas</button>
+      <button class="tabBtn" data-view="viewGastos">Gastos</button>
+      <button class="tabBtn" data-view="viewProduccion">Producción</button>
+      <button class="tabBtn" data-view="viewManoObra">Mano de obra</button>
+      <button class="tabBtn" data-view="viewAplicaciones">Aplicaciones</button>
+      <button class="tabBtn" data-view="viewMensual">Mensual</button>
+    </nav>
 
-      <div class="dashRow">
-        <label>
-          Mes
-          <input type="month" id="dashMes" />
-        </label>
-      </div>
+    <!-- ===================== -->
+    <!--         VENTAS         -->
+    <!-- ===================== -->
+    <section id="viewVentas" class="view activeView">
 
-      <div class="dashGrid">
-        <div class="dashItem">
-          <span class="dashLabel">Ventas</span>
-          <strong id="dashVentas">$0.00</strong>
-        </div>
+      <section class="card">
+        <h2>Registrar venta</h2>
 
-        <div class="dashItem">
-          <span class="dashLabel">Libras</span>
-          <strong id="dashLibras">0</strong>
-        </div>
+        <form id="ventaForm" autocomplete="off">
+          <div class="row">
+            <label>
+              Fecha
+              <input id="ventaFecha" type="date" required />
+            </label>
 
-        <div class="dashItem">
-          <span class="dashLabel">Precio promedio</span>
-          <strong id="dashPrecio">$0.00</strong>
-        </div>
+            <label>
+              Cliente
+              <input id="ventaCliente" type="text" placeholder="Ej: Don Juan / Exportador" required />
+            </label>
+          </div>
 
-        <div class="dashItem">
-          <span class="dashLabel"># Ventas</span>
-          <strong id="dashCount">0</strong>
-        </div>
-      </div>
+          <div class="row">
+            <label>
+              Libras vendidas
+              <input id="ventaLibras" type="number" min="0" step="0.01" required />
+            </label>
+
+            <label>
+              Precio por libra (RD$)
+              <input id="ventaPrecio" type="number" min="0" step="0.01" required />
+            </label>
+
+            <label>
+              Total (RD$)
+              <input id="ventaTotal" type="text" readonly />
+            </label>
+          </div>
+
+          <div class="row">
+            <label>
+              Método de cobro
+              <select id="ventaMetodo" required>
+                <option value="">Selecciona...</option>
+                <option value="Efectivo">Efectivo</option>
+                <option value="Transferencia">Transferencia</option>
+                <option value="Cheque">Cheque</option>
+                <option value="Crédito">Crédito</option>
+                <option value="Otro">Otro</option>
+              </select>
+            </label>
+
+            <label>
+              Estado de cobro
+              <select id="ventaEstado" required>
+                <option value="">Selecciona...</option>
+                <option value="Pendiente">Pendiente</option>
+                <option value="Parcial">Parcial</option>
+                <option value="Pagado">Pagado</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row">
+            <label>
+              Monto cobrado (RD$)
+              <input id="ventaCobrado" type="number" min="0" step="0.01" placeholder="0.00" />
+            </label>
+
+            <label>
+              Balance (RD$)
+              <input id="ventaBalance" type="text" readonly />
+            </label>
+          </div>
+
+          <label>
+            Nota (opcional)
+            <input id="ventaNota" type="text" placeholder="Ej: corte #12, calidad A, etc." />
+          </label>
+
+          <label>
+            Foto / Recibo (opcional)
+            <input id="ventaFoto" type="file" accept="image/*" />
+            <img id="ventaFotoPreview" class="previewImg" style="display:none; margin-top:8px; max-width:220px; border-radius:10px;" />
+          </label>
+
+          <button type="submit">Guardar venta</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Últimas ventas</h2>
+        <ul id="ventasList"></ul>
+      </section>
     </section>
 
-    <!-- FORM VENTAS -->
-    <section class="card">
-      <h2>Registrar venta</h2>
+    <!-- ===================== -->
+    <!--         GASTOS         -->
+    <!-- ===================== -->
+    <section id="viewGastos" class="view">
+      <section class="card">
+        <h2>💸 Registrar gasto</h2>
 
-      <form id="ventaForm" autocomplete="off">
+        <!-- mini form: nueva categoría (oculto) -->
+        <div id="gastoNewCatBox" class="miniForm" style="display:none; margin-bottom:12px;">
+          <div class="miniTitle">➕ Nueva categoría</div>
+          <input id="gastoNewCatNombre" type="text" placeholder="Ej: Combustible / Insumos" />
+          <button type="button" id="gastoSaveNewCat">Guardar categoría</button>
+        </div>
+
+        <!-- mini form: nuevo empleado (oculto) -->
+        <div id="gastoNewEmpBox" class="miniForm" style="display:none; margin-bottom:12px;">
+          <div class="miniTitle">➕ Nuevo empleado</div>
+          <input id="gastoNewEmpNombre" type="text" placeholder="Nombre" />
+          <input id="gastoNewEmpTel" type="text" placeholder="Teléfono (opcional)" />
+          <button type="button" id="gastoSaveNewEmp">Guardar empleado</button>
+        </div>
+
+        <form id="gastoForm" autocomplete="off">
+          <div class="row">
+            <label>
+              Fecha
+              <input id="gastoFecha" type="date" required />
+            </label>
+
+            <label>
+              Categoría
+              <select id="gastoCategoria" required></select>
+            </label>
+          </div>
+
+          <div class="row">
+            <label>
+              Monto
+              <input id="gastoMonto" type="number" min="0" step="0.01" required />
+            </label>
+
+            <label>
+              Método de pago
+              <select id="gastoMetodo" required>
+                <option value="">Selecciona…</option>
+                <option value="CREDITO">Crédito</option>
+                <option value="EFECTIVO">Efectivo</option>
+                <option value="PENDIENTE">Pendiente</option>
+                <option value="TRANSFERENCIA">Transferencia</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row">
+            <label>
+              Proveedor
+              <input id="gastoProveedor" type="text" placeholder="Ej: Ferretería, Agroservicio..." />
+            </label>
+
+            <label>
+              Empleado
+              <select id="gastoEmpleado"></select>
+            </label>
+          </div>
+
+          <label>
+            Recibo (foto)
+            <input id="gastoRecibo" type="file" accept="image/*" capture="environment" />
+          </label>
+
+          <label>
+            Nota (opcional)
+            <input id="gastoNota" type="text" placeholder="Opcional" />
+          </label>
+
+          <button type="submit">Guardar gasto</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Últimos gastos</h2>
+        <ul id="gastosList"></ul>
+      </section>
+    </section>
+
+
+<!-- ======================= -->
+    <!--       PRODUCCIÓN         -->
+    <!-- ======================= -->
+    <section id="viewProduccion" class="view">
+      <section class="card">
+        <h2>🧺 Registrar producción</h2>
+
+        <!-- mini form: nuevo empleado (oculto) -->
+        <div id="prodNewEmpBox" class="miniForm" style="display:none; margin-bottom:12px;">
+          <div class="miniTitle">➕ Nuevo empleado</div>
+          <input id="prodNewEmpNombre" type="text" placeholder="Nombre" />
+          <input id="prodNewEmpTel" type="text" placeholder="Teléfono (opcional)" />
+          <button type="button" id="prodSaveNewEmp">Guardar empleado</button>
+        </div>
+
+
+  
+        <div id="prodNewZonaBox" class="miniForm" style="display:none; margin-bottom:12px;">
+          <div class="miniTitle">➕ Nueva zona</div>
+          <input id="prodNewZonaNombre" type="text" placeholder="Nombre (Ej: Zona 4 / Loma arriba)" />
+          <input id="prodNewZonaDesc" type="text" placeholder="Descripción (opcional)" />
+          <button type="button" id="prodSaveNewZona">Guardar zona</button>
+        </div>
+
+
+        <!-- Catálogos rápidos -->
+        
+        <form id="prodForm" autocomplete="off">
         <div class="row">
           <label>
-            Fecha
-            <input id="ventaFecha" type="date" required />
-          </label>
+          Fecha
+          <input id="prodFecha" type="date" required />
+         </label>
 
-          <label>
-            Libras
-            <input id="ventaLibras" type="number" min="0" step="0.01" required />
-          </label>
-        </div>
+       <label>
+      Zona
+      <select id="prodZona" required></select>
+    </label>
+  </div>
 
-        <div class="row">
-          <label>
-            Precio por libra
-            <input id="ventaPrecio" type="number" min="0" step="0.01" required />
-          </label>
+  <!-- Empleados: puedes agregar varios -->
+  <div class="row">
+    <label style="width:100%;">
+      Empleados
+      <div id="prodEmps" class="empList"></div>
+      <button type="button" id="prodAddEmp" class="btnSecondary">+ Agregar empleado</button>
+    </label>
+  </div>
 
-          <label>
-            Cliente
-            <input id="ventaCliente" type="text" placeholder="Ej: Don Juan / Exportador" required />
-          </label>
-        </div>
+  <div class="row">
+    <label>
+      Libras
+      <input id="prodLibras" type="number" min="0" step="0.01" required />
+    </label>
 
-        <label>
-          Nota (opcional)
-          <input id="ventaNota" type="text" placeholder="Ej: corte #12, calidad A, etc." />
-        </label>
+    <label>
+      Cajas (opcional)
+      <input id="prodCajas" type="number" min="0" step="1" />
+    </label>
+  </div>
 
-        <button type="submit">Guardar venta</button>
-      </form>
+  <div class="row">
+    <label>
+      Nota
+      <input id="prodNota" type="text" placeholder="Opcional" />
+    </label>
+  </div>
+
+  <button type="submit">Guardar producción</button>
+</form>
+
+<!-- Template de fila de empleado (se clona desde app.js) -->
+<template id="prodEmpTpl">
+  <div class="empRow">
+    <select class="prodEmpleadoSel" required></select>
+    <button type="button" class="empRemove btnDanger">Quitar</button>
+  </div>
+</template>
+</section>
+
+      <section class="card">
+        <h2>Última producción</h2>
+        <ul id="prodList"></ul>
+      </section>
     </section>
 
-    <!-- LISTA VENTAS -->
-    <section class="card">
-      <h2>Últimas ventas</h2>
-      <ul id="ventasList"></ul>
-    </section>
-  </main>
+    <!-- ======================= -->
+    <!--      MANO DE OBRA        -->
+    <!-- ======================= -->
+    <section id="viewManoObra" class="view">
+      <section class="card">
+  <h2>👷 Registrar mano de obra</h2>
 
-<!-- FORM GASTOS -->
-<section class="card">
-  <h2>💸 Registrar gasto</h2>
+  <!-- mini form: nuevo empleado (oculto) -->
+  <div id="moNewEmpBox" class="miniForm" style="display:none; margin-bottom:12px;">
+    <div class="miniTitle">➕ Nuevo empleado</div>
+    <input id="moNewEmpNombre" type="text" placeholder="Nombre" />
+    <input id="moNewEmpTel" type="text" placeholder="Teléfono (opcional)" />
+    <button type="button" id="moSaveNewEmp">Guardar empleado</button>
+  </div>
 
-  <form id="gastoForm" autocomplete="off">
+  <!-- mini form: nueva tarea (oculto) -->
+  <div id="moNewTaskBox" class="miniForm" style="display:none; margin-bottom:12px;">
+    <div class="miniTitle">➕ Nueva tarea</div>
+    <input id="moNewTaskNombre" type="text" placeholder="Ej: Poda / Limpieza / Fumigación" />
+    <button type="button" id="moSaveNewTask">Guardar tarea</button>
+  </div>
+
+  <form id="moForm" autocomplete="off">
     <div class="row">
-  <label>Fecha ...</label>
-  <label>Monto ...</label>
-</div>
-
-<div class="row">
-  <label>Categoría ...</label>
-</div>
-
-<label>
-  Nota (opcional)
-  <input id="gastoNota" ... />
-</label>
-
       <label>
-        Categoría
-        <select id="gastoCategoria" required>
-          <option value="">Selecciona…</option>
-          <option>Mano de obra</option>
-          <option>Combustible</option>
-          <option>Insumos</option>
-          <option>Mantenimiento</option>
-          <option>Transporte</option>
-          <option>Herramientas</option>
-          <option>Otros</option>
-        </select>
+        Fecha
+        <input id="moFecha" type="date" required />
       </label>
 
       <label>
-        Nota (opcional)
-        <input id="gastoNota" type="text" placeholder="Ej: gasolina, trimmer, fertilizante…" />
+        Empleado
+        <select id="moEmpleado" required></select>
       </label>
     </div>
 
-    <button type="submit">Guardar gasto</button>
+    <div class="row">
+      <label>
+        Tarea
+        <select id="moTarea" required></select>
+      </label>
+
+      <label>
+        Horas de trabajo
+        <input id="moHoras" type="number" min="0" step="0.25" required />
+      </label>
+    </div>
+
+    <div class="row">
+      <label>
+        Pago día ($)
+        <input id="moPagoDia" type="number" min="0" step="0.01" required />
+      </label>
+
+      <label>
+        Notas
+        <input id="moNota" type="text" placeholder="Opcional" />
+      </label>
+    </div>
+
+    <button type="submit">Guardar mano de obra</button>
   </form>
 </section>
 
-<!-- LISTA GASTOS -->
 <section class="card">
-  <h2>Últimos gastos</h2>
-  <ul id="gastosList"></ul>
+  <h2>Última mano de obra</h2>
+  <ul id="moList"></ul>
 </section>
 
+    </section>
 
-  <!-- IMPORTANTE: orden correcto -->
+<!-- ======================= -->
+    <!--      APLICACIONES        -->
+    <!-- ======================= -->
+    <section id="viewMensual" class="view">
+
+  <!-- 🔥 Resumen mensual -->
+  <section class="card" id="dashboard">
+    <h2>📊 Resumen mensual</h2>
+
+    <div class="dashRow">
+      <label>
+        Mes
+        <input type="month" id="dashMes" />
+      </label>
+    </div>
+
+    <div class="dashGrid">
+      <div class="dashItem">
+        <span class="dashLabel">Ventas</span>
+        <strong id="dashVentas">$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Libras</span>
+        <strong id="dashLibras">0</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Precio promedio</span>
+        <strong id="dashPrecio">$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel"># Ventas</span>
+        <strong id="dashCount">0</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Gastos</span>
+        <strong id="dashGastos">$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Neto</span>
+        <strong id="dashNeto">$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Costo / lb</span>
+        <strong id="dashCostoLb">$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Margen / lb</span>
+        <strong id="dashMargenLb">$0.00</strong>
+      </div>
+    </div>
+
+    <!-- Gastos por categoría -->
+    <div class="dashTableWrap">
+      <h3 class="dashSub">Gastos por categoría (mes)</h3>
+      <table class="dashTable">
+        <thead>
+          <tr>
+            <th>Categoría</th>
+            <th style="text-align:right;">Total</th>
+          </tr>
+        </thead>
+        <tbody id="dashGastosCategorias">
+          <tr><td colspan="2">Cargando…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 📅 Números mensuales -->
+  <section class="card">
+    <h2>📅 Números mensuales</h2>
+    <p class="muted">
+      Aquí pondremos la tabla de últimos 12 meses (ventas, gastos, neto, costo/lb, margen/lb, producción, mano de obra, aplicaciones).
+    </p>
+
+    <table class="dashTable">
+      <thead>
+        <tr>
+          <th>Mes</th>
+          <th style="text-align:right;">Ventas</th>
+          <th style="text-align:right;">Gastos</th>
+          <th style="text-align:right;">Neto</th>
+          <th style="text-align:right;">Libras</th>
+        </tr>
+      </thead>
+      <tbody id="mensualTable">
+        <tr><td colspan="5">Próximo paso…</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</section>
+
+      
+ 
+
+  <!-- Orden correcto -->
   <script src="storage.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
+
