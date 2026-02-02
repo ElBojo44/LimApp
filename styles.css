@@ -55,8 +55,8 @@ h1{
   border-color: #2f6fed;
 }
 
-.view{ display: none; }
-.view.activeView{ display: block; }
+.view { display: none; }
+.view.activeView { display: block; }
 
 /* ===== Forms ===== */
 .row{

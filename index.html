@@ -10,21 +10,23 @@
 <body>
   <main class="container">
     <h1>🍋 App Limones</h1>
+  
 
-    <!-- Tabs -->
     <nav class="tabs">
-      <button class="tabBtn active" data-view="viewVentas">Ventas</button>
+      <button class="tabBtn active" data-view="viewMensual">Mensual</button>
+      <button class="tabBtn" data-view="viewVentas">Ventas</button>
       <button class="tabBtn" data-view="viewGastos">Gastos</button>
       <button class="tabBtn" data-view="viewProduccion">Producción</button>
       <button class="tabBtn" data-view="viewManoObra">Mano de obra</button>
       <button class="tabBtn" data-view="viewAplicaciones">Aplicaciones</button>
-      <button class="tabBtn" data-view="viewMensual">Mensual</button>
     </nav>
 
+   
     <!-- ===================== -->
     <!--         VENTAS         -->
     <!-- ===================== -->
-    <section id="viewVentas" class="view activeView">
+    <section id="viewVentas" class="view">
+
 
       <section class="card">
         <h2>Registrar venta</h2>
@@ -38,26 +40,40 @@
 
             <label>
               Cliente
-              <input id="ventaCliente" type="text" placeholder="Ej: Don Juan / Exportador" required />
+              <select id="ventaCliente">
+                <option value="">Selecciona…</option>
+                <option value="__NEW__">+ Nuevo…</option>
+              </select>
             </label>
-          </div>
+          </div>  
 
-          <div class="row">
-            <label>
-              Libras vendidas
-              <input id="ventaLibras" type="number" min="0" step="0.01" required />
-            </label>
+            <!-- mini form: nuevo cliente -->
+            <div id="ventaNewClienteBox" class="miniForm" style="display:none; margin-top:10px;">
+              <div class="miniTitle">➕ Nuevo cliente</div>
+              <input id="ventaNewClienteNombre" type="text" placeholder="Nombre del cliente" />
+              <input id="ventaNewClienteTel" type="text" placeholder="Teléfono (opcional)" />
+              <button type="button" id="ventaSaveNewCliente">Guardar cliente</button>
+            </div>
+
+
+           <div class="row">
+              <label>
+                Libras vendidas
+                <input id="ventaLibras" type="number" min="0" step="0.01" required />
+              </label>
 
             <label>
               Precio por libra (RD$)
               <input id="ventaPrecio" type="number" min="0" step="0.01" required />
             </label>
-
-            <label>
-              Total (RD$)
-              <input id="ventaTotal" type="text" readonly />
-            </label>
           </div>
+
+           <div class="row">
+               <label>
+                   Total (RD$)
+                   <input id="ventaTotal" type="text" readonly />
+               </label>
+           </div>
 
           <div class="row">
             <label>
@@ -124,7 +140,7 @@
         <h2>💸 Registrar gasto</h2>
 
         <!-- mini form: nueva categoría (oculto) -->
-        <div id="gastoNewCatBox" class="miniForm" style="display:none; margin-bottom:12px;">
+        <div id="gastoNewCatBox" class="miniForm" style="display:none; margin-bottom:10px;">
           <div class="miniTitle">➕ Nueva categoría</div>
           <input id="gastoNewCatNombre" type="text" placeholder="Ej: Combustible / Insumos" />
           <button type="button" id="gastoSaveNewCat">Guardar categoría</button>
@@ -147,7 +163,10 @@
 
             <label>
               Categoría
-              <select id="gastoCategoria" required></select>
+              <select id="gastoCategoria">   
+                <option value="">Selecciona…</option>
+                <option value="__NEW__">+ Nuevo…</option>
+             </select>
             </label>
           </div>
 
@@ -176,8 +195,10 @@
             </label>
 
             <label>
-              Empleado
-              <select id="gastoEmpleado"></select>
+                Empleado
+                <select id="gastoEmpleado">
+                  <option value="">Selecciona…</option>
+                </select>
             </label>
           </div>
 
@@ -230,48 +251,53 @@
         <!-- Catálogos rápidos -->
         
         <form id="prodForm" autocomplete="off">
-        <div class="row">
-          <label>
-          Fecha
-          <input id="prodFecha" type="date" required />
-         </label>
+            <div class="row">
+                <label>
+                    Fecha
+                    <input id="prodFecha" type="date" required />
+                </label>
 
-       <label>
-      Zona
-      <select id="prodZona" required></select>
-    </label>
-  </div>
+                <label>
+                    Zona
+                    <select id="prodZona" required>
+                      <option value="">Selecciona…</option>
+                    </select>                  
+                </label>
+            </div>
 
-  <!-- Empleados: puedes agregar varios -->
-  <div class="row">
-    <label style="width:100%;">
-      Empleados
-      <div id="prodEmps" class="empList"></div>
-      <button type="button" id="prodAddEmp" class="btnSecondary">+ Agregar empleado</button>
-    </label>
-  </div>
+            <!-- Empleados: puedes agregar varios -->
+            <div class="row">
+                <div style="width:100%;">
+                    <div class="muted">Empleados</div>
+                    <div id="prodEmps" class="empList"></div>
+                    <button type="button" id="prodAddEmp" class="btnSecondary">
+                        + Agregar empleado
+                    </button>
+                </div>
+            </div>
 
-  <div class="row">
-    <label>
-      Libras
-      <input id="prodLibras" type="number" min="0" step="0.01" required />
-    </label>
 
-    <label>
-      Cajas (opcional)
-      <input id="prodCajas" type="number" min="0" step="1" />
-    </label>
-  </div>
+            <div class="row">
+                <label>
+                    Libras
+                    <input id="prodLibras" type="number" min="0" step="0.01" required />
+                </label>
 
-  <div class="row">
-    <label>
-      Nota
-      <input id="prodNota" type="text" placeholder="Opcional" />
-    </label>
-  </div>
+                <label>
+                    Cajas (opcional)
+                    <input id="prodCajas" type="number" min="0" step="1" />
+                </label>
+            </div>
 
-  <button type="submit">Guardar producción</button>
-</form>
+            <div class="row">
+                <label>
+                    Nota
+                    <input id="prodNota" type="text" placeholder="Opcional" />
+                </label>
+            </div>
+
+            <button type="submit">Guardar producción</button>
+        </form>
 
 <!-- Template de fila de empleado (se clona desde app.js) -->
 <template id="prodEmpTpl">
@@ -319,14 +345,18 @@
 
       <label>
         Empleado
-        <select id="moEmpleado" required></select>
+          <select id="moEmpleado" required>
+            <option value="">Selecciona…</option>
+          </select>
       </label>
     </div>
 
     <div class="row">
       <label>
         Tarea
-        <select id="moTarea" required></select>
+        <select id="moTarea" required>
+          <option value="">Selecciona…</option>
+        </select>
       </label>
 
       <label>
@@ -358,10 +388,79 @@
 
     </section>
 
-<!-- ======================= -->
+
+    <!-- ======================= -->
     <!--      APLICACIONES        -->
     <!-- ======================= -->
-    <section id="viewMensual" class="view">
+    <section id="viewAplicaciones" class="view">
+  <section class="card">
+    <h2>🧪 Registrar aplicación</h2>
+
+    <form id="appForm" autocomplete="off">
+      <div class="row">
+        <label>
+          Fecha
+          <input id="appFecha" type="date" required />
+        </label>
+
+        <label>
+          Zona (opcional)
+          <select id="appZona">
+            <option value="">Selecciona…</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row">
+        <label>
+          Producto
+          <input id="appProducto" type="text" placeholder="Ej: Aceite agrícola, Cobre, etc." required />
+        </label>
+
+        <label>
+          Tipo
+          <select id="appTipo" required>
+            <option value="">Selecciona…</option>
+            <option value="Fertilizante">Fertilizante</option>
+            <option value="Fungicida">Fungicida</option>
+            <option value="Insecticida">Insecticida</option>
+            <option value="Herbicida">Herbicida</option>
+            <option value="Foliar">Foliar</option>
+            <option value="Otro">Otro</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row">
+        <label>
+          Dosis / Mezcla (opcional)
+          <input id="appDosis" type="text" placeholder="Ej: 1L/200L, 2cc/L..." />
+        </label>
+
+        <label>
+          Costo (RD$)
+          <input id="appCosto" type="number" min="0" step="0.01" value="0" />
+        </label>
+      </div>
+
+      <label>
+        Nota (opcional)
+        <input id="appNota" type="text" placeholder="Ej: aplicado en la tarde, lluvia al día siguiente..." />
+      </label>
+
+      <button type="submit">Guardar aplicación</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Últimas aplicaciones</h2>
+    <ul id="appsList"></ul>
+  </section>
+</section>
+>
+
+    <section id="viewMensual" class="view activeView">
+
 
   <!-- 🔥 Resumen mensual -->
   <section class="card" id="dashboard">
@@ -406,6 +505,31 @@
       <div class="dashItem">
         <span class="dashLabel">Margen / lb</span>
         <strong id="dashMargenLb">$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Producción (lb)</span>
+        <strong id="dashProdLbs">0</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Producción (cajas)</span>
+        <strong id="dashProdCajas">0</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Mano de obra</span>
+        <strong id="dashManoObra">-$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Aplicaciones</span>
+        <strong id="dashAplicaciones">-$0.00</strong>
+      </div>
+
+      <div class="dashItem">
+        <span class="dashLabel">MO / lb</span>
+        <strong id="dashMoLb">$0.00</strong>
+      </div>
+      <div class="dashItem">
+        <span class="dashLabel">Apps / lb</span>
+        <strong id="dashAppLb">$0.00</strong>
       </div>
     </div>
 

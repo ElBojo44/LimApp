@@ -12,16 +12,22 @@ async function apiGet(type) {
   return json.data || [];
 }
 
-async function apiPost(type, data) {
+// POST genérico: permite enviar body completo (action:update/delete, etc.)
+async function apiPostBody(bodyObj) {
   const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" }, // evita preflight CORS
-    body: JSON.stringify({ type, data }),
+    body: JSON.stringify(bodyObj || {}),
   });
-  if (!res.ok) throw new Error(`POST ${type} failed: ${res.status}`);
+  if (!res.ok) throw new Error(`POST failed: ${res.status}`);
   const json = await res.json();
   if (!json.ok) throw new Error(json.error || "POST error");
   return true;
+}
+
+// compat: mantener apiPost(type,data)
+async function apiPost(type, data) {
+  return apiPostBody({ type, data });
 }
 
 function makeId() {
@@ -187,15 +193,19 @@ async function getAplicaciones() {
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-// Si tu Apps Script no tiene type="aplicaciones" todavía, cambia esto a apiPost.
-// Por ahora lo dejamos local para no romper.
 async function addAplicacion(item) {
-  const key = "LIM_APLICACIONES";
-  const arr = (() => { try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch { return []; } })();
-  arr.unshift(item);
-  localStorage.setItem(key, JSON.stringify(arr));
-  return item;
+  await apiPost("aplicaciones", item);
 }
+
+async function updateAplicacion(id, patch) {
+  return apiPostBody({
+    type: "aplicaciones",
+    action: "update",
+    id,
+    data: { id, ...(patch || {}) },
+  });
+}
+
 
 // ===============================
 // (Opcional) Storage LOCAL para respaldo / pruebas
@@ -234,4 +244,45 @@ async function addGastoLocal(g) {
   arr.unshift(g);
   _writeArr(KEY_GASTOS_LOCAL, arr);
   return g;
+}
+
+// ===============================
+// UPDATE (Sheets)
+//  Requiere Apps Script con soporte: {type, action:"update", id, data}
+// ===============================
+
+async function updateVenta(id, patch) {
+  return apiPostBody({
+    type: "ventas",
+    action: "update",
+    id,
+    data: { id, ...(patch || {}) },
+  });
+}
+
+async function updateGasto(id, patch) {
+  return apiPostBody({
+    type: "gastos",
+    action: "update",
+    id,
+    data: { id, ...(patch || {}) },
+  });
+}
+
+async function updateProduccion(id, patch) {
+  return apiPostBody({
+    type: "produccion",
+    action: "update",
+    id,
+    data: { id, ...(patch || {}) },
+  });
+}
+
+async function updateManoObra(id, patch) {
+  return apiPostBody({
+    type: "manoobra",
+    action: "update",
+    id,
+    data: { id, ...(patch || {}) },
+  });
 }
