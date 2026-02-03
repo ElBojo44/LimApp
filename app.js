@@ -82,6 +82,15 @@ const CACHE = {
   loadedAt: 0,
 };
 
+const LOADED = {
+  ventas: false,
+  gastos: false,
+  produccion: false,
+  manoobra: false,
+  aplicaciones: false,
+  mensual: false,
+};
+
 async function warmCache() {
   if (CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
 
@@ -142,8 +151,68 @@ function initTabs() {
       document.querySelectorAll(".view").forEach(v => v.classList.remove("activeView"));
       btn.classList.add("active");
       document.getElementById(btn.dataset.view)?.classList.add("activeView");
+      // Lazy render del historial al entrar al tab
+      openTabAndRender(btn.dataset.view);
     });
   });
+
+  // Render inicial del tab activo
+  const active = document.querySelector(".tabBtn.active");
+  if (active) openTabAndRender(active.dataset.view);
+}
+
+
+async function openTabAndRender(viewId) {
+  const v = String(viewId || "");
+  // viewId viene como "viewVentas", etc.
+  const key = v.replace(/^view/i, "").toLowerCase(); // "ventas", "gastos", ...
+
+  try {
+    // base cache para todo lo mensual (ventas/gastos/produccion)
+    if (["ventas", "gastos", "produccion", "mensual"].includes(key)) {
+      await warmCache();
+    }
+
+    if (key === "ventas" && !LOADED.ventas) {
+      await renderVentas(CACHE.ventas);
+      LOADED.ventas = true;
+      return;
+    }
+
+    if (key === "gastos" && !LOADED.gastos) {
+      await renderGastos(CACHE.gastos);
+      LOADED.gastos = true;
+      return;
+    }
+
+    if (key === "produccion" && !LOADED.produccion) {
+      await renderProduccion(CACHE.produccion);
+      LOADED.produccion = true;
+      return;
+    }
+
+    if (key === "manoobra" && !LOADED.manoobra) {
+      const arr = await warmCacheManoObra();
+      await renderManoObraSimple(arr);
+      LOADED.manoobra = true;
+      return;
+    }
+
+    if (key === "aplicaciones" && !LOADED.aplicaciones) {
+      const arr = await warmCacheAplicaciones();
+      await renderAplicaciones(arr);
+      LOADED.aplicaciones = true;
+      return;
+    }
+
+    if (key === "mensual") {
+      await renderDashboard();
+      LOADED.mensual = true;
+      return;
+    }
+  } catch (err) {
+    console.error("openTabAndRender:", viewId, err);
+  }
 }
 
 // ---------- GLOBALS ----------
@@ -230,14 +299,14 @@ async function initApp() {
 
   // Catálogos (Zonas / Empleados / Labores / Categorías)
   await loadCatalogos();
-
   // ✅ Carga inicial mínima (para que abra rápido)
   await warmCache();
 
-  // ✅ Render inicial: solo Dashboard/Mensual
-  await renderDashboard();
+  // ✅ Render inicial según el tab activo
+  const activeBtn = document.querySelector(".tabBtn.active");
+  const activeView = activeBtn?.dataset?.view || "viewMensual";
+  await openTabAndRender(activeView);
 
-  // Los demás tabs se renderizan cuando el usuario entra a ellos
 }
 
 
