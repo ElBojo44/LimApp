@@ -1885,6 +1885,9 @@ async function renderDashboard() {
   ]);
 
   let tv = 0, tl = 0, tg = 0, cv = 0, cg = 0;
+  let tMO = 0;
+  let tApps = 0;
+
 
   // Ventas
   ventas.forEach(v => {
@@ -1945,8 +1948,7 @@ async function renderDashboard() {
 
   // Gastos por categoría (igual que ya tienes)
   const catMap = {};
-let tMO = 0;
-let tApps = 0;
+
 
 gastos.forEach(g => {
   if (!String(g.fecha || "").startsWith(mes)) return;
