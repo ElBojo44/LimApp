@@ -68,6 +68,59 @@ function preserveSelectValue(selectId, fn) {
     }
 }
 
+// ===============================
+// CACHE (nivel 1 - memoria)
+// - Carga inicial SOLO: ventas, gastos, produccion
+// - ManoObra / Aplicaciones se cargan bajo demanda (lazy)
+// ===============================
+const CACHE = {
+  ventas: null,
+  gastos: null,
+  produccion: null,
+  manoobra: null,
+  aplicaciones: null,
+  loadedAt: 0,
+};
+
+async function warmCache() {
+  if (CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
+
+  const [v, g, p] = await Promise.all([
+    getVentas(),
+    getGastos(),
+    getProduccion(),
+  ]);
+
+  CACHE.ventas = v || [];
+  CACHE.gastos = g || [];
+  CACHE.produccion = p || [];
+  CACHE.loadedAt = Date.now();
+  return CACHE;
+}
+
+// Lazy loaders
+async function warmCacheManoObra() {
+  if (CACHE.manoobra) return CACHE.manoobra;
+  CACHE.manoobra = (await getManoObra()) || [];
+  CACHE.loadedAt = Date.now();
+  return CACHE.manoobra;
+}
+async function warmCacheAplicaciones() {
+  if (CACHE.aplicaciones) return CACHE.aplicaciones;
+  CACHE.aplicaciones = (await getAplicaciones()) || [];
+  CACHE.loadedAt = Date.now();
+  return CACHE.aplicaciones;
+}
+
+// Para cuando guardas algo y quieres refrescar SOLO un tipo
+async function refreshCache(type) {
+  if (type === "ventas") CACHE.ventas = await getVentas();
+  if (type === "gastos") CACHE.gastos = await getGastos();
+  if (type === "produccion") CACHE.produccion = await getProduccion();
+  if (type === "manoobra") CACHE.manoobra = await getManoObra();
+  if (type === "aplicaciones") CACHE.aplicaciones = await getAplicaciones();
+  CACHE.loadedAt = Date.now();
+}
 
 
 
@@ -161,34 +214,32 @@ function fillClienteSelect() {
 
 // ---------- INIT ----------
 async function initApp() {
-  // Hooks  
+  // Hooks (solo listeners)
   hookVentas();
   hookGastos();
-  hookCatalogForms();   
+  hookCatalogForms();
+  hookProduccion();
   hookManoObraSimple();
-  await renderManoObraSimple();
+  hookAplicaciones();
+
   loadClientes();
   fillClienteSelect();
   hookClientesVentas();
-  hookAplicaciones();
-  await renderAplicaciones();
-
-
-
 
   initDashboard();
 
-  // Carga catálogos + dropdowns
+  // Catálogos (Zonas / Empleados / Labores / Categorías)
   await loadCatalogos();
-  await renderGastos();
-  hookProduccion();
-  
 
-  // Render inicial
-  await Promise.all([renderVentas(), renderGastos(), renderProduccion()]);
+  // ✅ Carga inicial mínima (para que abra rápido)
+  await warmCache();
+
+  // ✅ Render inicial: solo Dashboard/Mensual
   await renderDashboard();
-  
+
+  // Los demás tabs se renderizan cuando el usuario entra a ellos
 }
+
 
 
 
@@ -626,7 +677,7 @@ function beginEditGasto(g) {
 
 
 
-async function renderGastos() {
+async function renderGastos(arrIn) {
   const list = document.getElementById("gastosList");
   if (!list) return;
 
@@ -936,13 +987,14 @@ function beginEditProduccion(p) {
 
 
 
-async function renderProduccion() {
+async function renderProduccion(arrIn) {
   const ul = document.getElementById("prodList");
   if (!ul) return;
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  const arr = (await getProduccion()) || [];
+  const arr = (arrIn ?? CACHE.produccion ?? (await getProduccion())) || [];
+  CACHE.produccion = arr;
   if (!arr.length) {
     ul.innerHTML = "<li>No hay producción.</li>";
     return;
@@ -1096,17 +1148,16 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
   document.getElementById("moNewTaskNombre").value = "";
 });
 
-
   // Submit mano de obra simple
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
 
-    const fecha = normalizeISODate(document.getElementById("moFecha").value);
-    const empleadoId = document.getElementById("moEmpleado").value;
-    const tareaId = document.getElementById("moTarea").value;
-    const horas = Number(document.getElementById("moHoras").value);
-    const pagoDia = Number(document.getElementById("moPagoDia").value);
-    const nota = document.getElementById("moNota").value.trim();
+    const fecha = normalizeISODate(document.getElementById("moFecha")?.value);
+    const empleadoId = document.getElementById("moEmpleado")?.value || "";
+    const tareaId = document.getElementById("moTarea")?.value || "";
+    const horas = Number(document.getElementById("moHoras")?.value || 0);
+    const pagoDia = Number(document.getElementById("moPagoDia")?.value || 0);
+    const nota = (document.getElementById("moNota")?.value || "").trim();
 
     if (!fecha) return alert("Fecha inválida. Usa el calendario.");
     if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
@@ -1114,111 +1165,78 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
     if (!isFinite(horas) || horas <= 0) return alert("Horas debe ser > 0.");
     if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago día debe ser >= 0.");
 
-    const emp = EMPLEADOS.find(x => x.id === empleadoId) || {};
-    const task = LABORES.find(x => x.id === tareaId) || {};
+    const emp = (EMPLEADOS || []).find(x => x.id === empleadoId) || {};
+    const task = (LABORES || []).find(x => x.id === tareaId) || {};
 
-    ensureCancelBtnMO();
+    const empleadoNombre = String(emp.nombre || "").trim();
+    const tareaNombre = String(task.nombre || "").trim();
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
+    const isEdit = (EDIT && EDIT.tipo === "mo" && EDIT.id);
 
-  const fecha = normalizeISODate(document.getElementById("moFecha").value);
-  const empleadoId = document.getElementById("moEmpleado").value;
-  const tareaId = document.getElementById("moTarea").value;
-  const horas = Number(document.getElementById("moHoras").value);
-  const pagoDia = Number(document.getElementById("moPagoDia").value);
-  const nota = document.getElementById("moNota").value.trim();
+    const payload = {
+      id: isEdit ? EDIT.id : makeId(),
+      fecha,
+      empleadoId,
+      empleadoNombre,
+      tareaId,
+      tareaNombre,
+      horas: round2(horas),
+      pagoDia: round2(pagoDia),
+      nota,
+      createdAt: Date.now()
+    };
 
-  if (!fecha) return alert("Fecha inválida. Usa el calendario.");
-  if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
-  if (!tareaId || tareaId === "__NEW__") return alert("Selecciona una tarea.");
-  if (!isFinite(horas) || horas <= 0) return alert("Horas debe ser > 0.");
-  if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago día debe ser >= 0.");
+    if (isEdit) {
+      await updateManoObra(payload.id, payload);
+      alert("✅ Mano de obra actualizada");
+    } else {
+      await addManoObra(payload);
 
-  const emp = EMPLEADOS.find(x => x.id === empleadoId) || {};
-  const task = LABORES.find(x => x.id === tareaId) || {};
+      // ✅ Gasto automático SOLO cuando es NUEVO
+      await addGasto({
+        id: makeId(),
+        fecha,
+        monto: round2(pagoDia),
+        categoriaId: "",
+        categoriaNombre: "Mano de obra",
+        categoria: "Mano de obra",
+        nota: `${empleadoNombre} — ${tareaNombre} • ${round2(horas)}h${nota ? " • " + nota : ""}`,
+        createdAt: Date.now()
+      });
 
-  const payload = {
-    fecha,
-    empleadoId: emp.id || "",
-    empleadoNombre: emp.nombre || "",
-    tareaId: task.id || "",
-    tareaNombre: task.nombre || "",
-    horas: round2(horas),
-    pagoDia: round2(pagoDia),
-    nota,
-  };
-
-  if (EDIT?.tipo === "mo" && EDIT?.id) {
-    // ✅ EDITAR
-    if (typeof updateManoObra !== "function") {
-      alert("Falta updateManoObra() en storage.js. Mándame storage.js y lo agrego.");
-      return;
+      alert("✅ Mano de obra guardada");
     }
 
-    await updateManoObra(EDIT.id, payload);
-
+    // reset modo edición
     EDIT = { tipo: null, id: null };
     const submitBtn = document.querySelector("#moForm button[type='submit']");
     if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
     const cancelBtn = document.querySelector("#moForm .btnCancelEdit");
     if (cancelBtn) cancelBtn.style.display = "none";
 
-    alert("✅ Mano de obra actualizada");
-  } else {
-    // ✅ NUEVO
-    await addManoObra({
-      id: makeId(),
-      ...payload,
-      createdAt: Date.now(),
-    });
-
-    // ⚠️ aquí SOLO en “nuevo” creamos el gasto automático (para no duplicar al editar)
-    const empNombre = (emp && emp.nombre) ? emp.nombre : "";
-    const tareaNombre = (task && task.nombre) ? task.nombre : "";
-
-    await addGasto({
-      id: makeId(),
-      fecha,
-      monto: round2(pagoDia),
-      categoriaId: "",
-      categoriaNombre: "Mano de obra",
-      categoria: "Mano de obra",
-      nota: `${empNombre} — ${tareaNombre} • ${round2(horas)}h${nota ? " • " + nota : ""}`,
-      createdAt: Date.now()
-    });
-
-    alert("✅ Mano de obra guardada");
-  }
-
-  // refrescar listas
-  await renderGastos();
-  await renderDashboard();
-
-  form.reset();
-  document.getElementById("moFecha").value = todayISO();
-  await renderManoObraSimple();
-});
-
-
-    // refrescar gastos + dashboard (aunque estés en otro tab)
-    await renderGastos();
+    // refrescar cache + dashboard
+    await refreshCache("gastos");
+    await refreshCache("manoobra");
+    await warmCache(); // por si no estaba
     await renderDashboard();
 
-
     form.reset();
-    document.getElementById("moFecha").value = todayISO();
-    await renderManoObraSimple();
+    const f = document.getElementById("moFecha");
+    if (f) f.value = todayISO();
+
+    // la lista se renderiza bajo demanda; si estás en el tab, se verá al instante
+    await renderManoObraSimple(CACHE.manoobra);
   });
 }
 
-async function renderManoObraSimple() {
+async function renderManoObraSimple(arrIn) {
   const ul = document.getElementById("moList");
   if (!ul) return;
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  const arr = (await getManoObra()) || [];
+  await warmCacheManoObra();
+  const arr = (arrIn && Array.isArray(arrIn)) ? arrIn : (CACHE.manoobra || []);
   if (!arr.length) {
     ul.innerHTML = "<li>No hay mano de obra.</li>";
     return;
@@ -1466,23 +1484,6 @@ function hookVentas() {
     document.getElementById("ventaNewClienteBox")?.style && (document.getElementById("ventaNewClienteBox").style.display = "none");
   });
 
-  function ensureCancelBtn(formId, onCancel) {
-    const form = document.getElementById(formId);
-    if (!form) return;
-
-    let btn = form.querySelector(".btnCancelEdit");
-    if (btn) return;
-
-    btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btnCancelEdit";
-    btn.textContent = "Cancelar edición";
-    btn.style.marginLeft = "10px";
-    btn.style.display = "none";
-
-    btn.addEventListener("click", onCancel);
-    form.appendChild(btn);
-  }
 
   ensureCancelBtn("ventaForm", () => {
     EDIT = { tipo: null, id: null };
@@ -1550,12 +1551,13 @@ function hookClientesVentas() {
 
 
 
-async function renderVentas() {
+async function renderVentas(arrIn) {
   const list = document.getElementById("ventasList");
   if (!list) return;
 
   list.innerHTML = "<li>Cargando…</li>";
-const arr = (await getVentas()) || [];
+const arr = (arrIn ?? CACHE.ventas ?? (await getVentas())) || [];
+  CACHE.ventas = arr;
   if (!arr.length) {
     list.innerHTML = "<li>No hay ventas.</li>";
     return;
@@ -1812,7 +1814,7 @@ function beginEditAplicacion(a) {
   document.getElementById("appForm")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-async function renderAplicaciones() {
+async function renderAplicaciones(arrIn) {
   const ul = document.getElementById("appsList");
   if (!ul) return;
 
@@ -1820,7 +1822,8 @@ async function renderAplicaciones() {
 
   let arr = [];
   try {
-    arr = (await getAplicaciones()) || [];
+    await warmCacheAplicaciones();
+    arr = (arrIn && Array.isArray(arrIn)) ? arrIn : (CACHE.aplicaciones || []);
   } catch (e) {
     ul.innerHTML = "<li>No se pudo cargar aplicaciones (backend no listo).</li>";
     console.error(e);
@@ -1878,11 +1881,13 @@ async function renderDashboard() {
   const mes = document.getElementById("dashMes")?.value;
   if (!mes) return;
 
-  const [ventas, gastos, produccion, manoObra, apps] = await Promise.all([
-    getVentas(),
-    getGastos(),
-    getProduccion(),  
-  ]);
+  await warmCache();
+  const ventas = CACHE.ventas;
+  const gastos = CACHE.gastos;
+  const produccion = CACHE.produccion;
+
+  
+
 
   let tv = 0, tl = 0, tg = 0, cv = 0, cg = 0;
   let tMO = 0;
