@@ -1,6 +1,7 @@
 // ===== Google Sheets (Apps Script Web App) =====
-const API_URL =
-  "https://script.google.com/macros/s/AKfycbwaYmLuJZ9vkbGOtZMwciptTaOK8a_-TtW8bEK_16eYP5IHFodxGB0z4-WpKnVg8gqL/exec";
+
+const API_URL = "https://limones-proxy.elbojo.workers.dev";
+
 
 // --- helpers ---
 async function apiGet(type) {
@@ -16,23 +17,25 @@ async function apiGet(type) {
 async function apiPostBody(bodyObj) {
   const res = await fetch(API_URL, {
     method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" }, // evita preflight CORS
+    headers: { "Content-Type": "application/json" }, // ya tienes Worker, no hace falta text/plain
     body: JSON.stringify(bodyObj || {}),
   });
+
+  const text = await res.text();
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    console.error("Respuesta NO-JSON (primeros 300 chars):", text.slice(0, 300));
+    throw new Error(`Servidor devolvió HTML/no-JSON. Status: ${res.status}`);
+  }
+
   if (!res.ok) throw new Error(`POST failed: ${res.status}`);
-  const json = await res.json();
   if (!json.ok) throw new Error(json.error || "POST error");
   return true;
 }
 
-// compat: mantener apiPost(type,data)
-async function apiPost(type, data) {
-  return apiPostBody({ type, data });
-}
-
-function makeId() {
-  return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9);
-}
 
 function toDateNum(iso) {
   // iso esperado: YYYY-MM-DD

@@ -457,7 +457,7 @@
     <ul id="appsList"></ul>
   </section>
 </section>
->
+
 
     <section id="viewMensual" class="view activeView">
 
@@ -554,7 +554,7 @@
   <section class="card">
     <h2>📅 Números mensuales</h2>
     <p class="muted">
-      Aquí pondremos la tabla de últimos 12 meses (ventas, gastos, neto, costo/lb, margen/lb, producción, mano de obra, aplicaciones).
+      Aquí pondremos la tabla de últimos 12 meses (mes, ventas, gastos, neto, libra, costo/lb, margen/lb, prod(lb), prod producción, mano de obra, aplicaciones).
     </p>
 
     <table class="dashTable">
@@ -565,11 +565,19 @@
           <th style="text-align:right;">Gastos</th>
           <th style="text-align:right;">Neto</th>
           <th style="text-align:right;">Libras</th>
+          <th style="text-align:right;">Costo / lb</th>
+          <th style="text-align:right;">Margen / lb</th>
+          <th style="text-align:right;">Prod (lb)</th>
+          <th style="text-align:right;">Prod (cajas)</th>
+          <th style="text-align:right;">Mano de obra</th>
+          <th style="text-align:right;">Aplicaciones</th>
+          <th style="text-align:right;">MO / lb</th>
+          <th style="text-align:right;">Apps / lb</th>
         </tr>
       </thead>
-      <tbody id="mensualTable">
-        <tr><td colspan="5">Próximo paso…</td></tr>
-      </tbody>
+
+      <!-- 👇 ESTE ES EL CLAVE -->
+      <tbody id="mensualBody"></tbody>
     </table>
   </section>
 

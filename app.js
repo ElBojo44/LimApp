@@ -14,6 +14,38 @@ function resetSelectToDefault(selectId) {
     sel.dispatchEvent(new Event("change"));
 }
 
+async function deleteItem(tipo, id) {
+  if (!id) return;
+  const ok = confirm("¿Seguro que quieres borrar este registro? Esta acción no se puede deshacer.");
+  if (!ok) return;
+
+  // Llama tu API (igual que update/add) pero con action delete
+  const res = await apiPost({ type: tipo, action: "delete", id });
+
+  if (!res?.ok) {
+    alert("No se pudo borrar. " + (res?.error || ""));
+    return;
+  }
+
+  // Limpia del cache local para que desaparezca de una vez
+  if (window.CACHE && Array.isArray(CACHE[tipo])) {
+    CACHE[tipo] = CACHE[tipo].filter(x => String(x.id) !== String(id));
+  }
+
+  // Re-render rápido según módulo
+  if (tipo === "gastos") renderGastos(CACHE.gastos || []);
+  if (tipo === "ventas") renderVentas(CACHE.ventas || []);
+  if (tipo === "produccion") renderProduccion(CACHE.produccion || []);
+  if (tipo === "manoobra") renderManoObra(CACHE.manoobra || []);
+  if (tipo === "aplicaciones") renderAplicaciones(CACHE.aplicaciones || []);
+
+  // Si estás en Mensual, refresca KPIs
+  if (document.getElementById("viewMensual")?.classList.contains("activeView")) {
+    renderDashboard();
+  }
+}
+
+
 function ensureCancelBtn(formId, onCancel) {
   const form = document.getElementById(formId);
   if (!form) return;
@@ -68,30 +100,110 @@ function preserveSelectValue(selectId, fn) {
     }
 }
 
+// --- Mensual PRO helpers ---
+function monthKeyFromAnyDate(v) {
+  if (!v) return "";
+  // Si ya viene como "YYYY-MM-DD" o "YYYY-MM"
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (/^\d{4}-\d{2}/.test(s)) return s.slice(0, 7); // YYYY-MM
+    // si viene "MM/DD/YYYY" o "M/D/YYYY"
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) return `${m[3]}-${String(m[1]).padStart(2, "0")}`;
+    return "";
+  }
+  // Si es Date real
+  if (v instanceof Date && !isNaN(v)) {
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}`;
+  }
+  // Por si viene número timestamp
+  if (typeof v === "number") {
+    const d = new Date(v);
+    if (!isNaN(d)) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }
+  return "";
+}
+
+
+function lastNMonthsKeys(n = 12, from = new Date()) {
+  const out = [];
+  const d = new Date(from.getFullYear(), from.getMonth(), 1);
+  for (let i = 0; i < n; i++) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push(`${y}-${m}`);
+    d.setMonth(d.getMonth() - 1);
+  }
+  return out;
+}
+
+function normCatName(v) {
+  return String(v || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function buildMonthlyPro(ventas = [], gastos = [], produccion = [], n = 12) {
+  const months = {};
+  // base months list (last N)
+  lastNMonthsKeys(n).forEach(k => months[k] = {
+    mes: k,
+    ventas: 0,
+    gastos: 0,
+    neto: 0,
+    libras: 0,
+    prodLb: 0,
+    prodCajas: 0,
+    manoobra: 0,
+    apps: 0
+  });
+
+  ventas.forEach(v => {
+    const mk = monthKeyFromAnyDate(v.fecha);
+    if (!months[mk]) return;
+    months[mk].ventas += Number(v.total) || 0;
+    months[mk].libras += Number(v.libras) || 0;
+  });
+
+  gastos.forEach(g => {
+    const mk = monthKeyFromAnyDate(g.fecha);
+    if (!months[mk]) return;
+    const monto = Number(g.monto) || 0;
+    months[mk].gastos += monto;
+
+    const cat = normCatName(g.categoriaNombre || g.categoria);
+    if (cat === "mano de obra" || cat === "manoobra") months[mk].manoobra += monto;
+    if (cat === "aplicaciones" || cat === "aplicacion") months[mk].apps += monto;
+  });
+
+  (produccion || []).forEach(p => {
+    const mk = monthKeyFromAnyDate(p.fecha);
+    if (!months[mk]) return;
+    months[mk].prodLb += Number(p.libras) || 0;
+    months[mk].prodCajas += Number(p.cajas) || 0;
+  });
+
+  const arr = Object.values(months).sort((a,b) => (a.mes < b.mes ? 1 : -1));
+  arr.forEach(r => {
+    r.neto = r.ventas - r.gastos;
+    r.costoLb = r.libras ? (r.gastos / r.libras) : 0;
+    r.margenLb = r.libras ? (r.neto / r.libras) : 0;
+    r.moLb = r.libras ? (r.manoobra / r.libras) : 0;
+    r.appsLb = r.libras ? (r.apps / r.libras) : 0;
+  });
+  return arr;
+}
+
 // ===============================
 // CACHE (nivel 1 - memoria)
-// - Carga inicial SOLO: ventas, gastos, produccion
-// - ManoObra / Aplicaciones se cargan bajo demanda (lazy)
 // ===============================
 const CACHE = {
   ventas: null,
   gastos: null,
   produccion: null,
-  manoobra: null,
-  aplicaciones: null,
   loadedAt: 0,
 };
 
-const LOADED = {
-  ventas: false,
-  gastos: false,
-  produccion: false,
-  manoobra: false,
-  aplicaciones: false,
-  mensual: false,
-};
-
 async function warmCache() {
+  // si ya está, no vuelve a pedir
   if (CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
 
   const [v, g, p] = await Promise.all([
@@ -104,21 +216,8 @@ async function warmCache() {
   CACHE.gastos = g || [];
   CACHE.produccion = p || [];
   CACHE.loadedAt = Date.now();
-  return CACHE;
-}
 
-// Lazy loaders
-async function warmCacheManoObra() {
-  if (CACHE.manoobra) return CACHE.manoobra;
-  CACHE.manoobra = (await getManoObra()) || [];
-  CACHE.loadedAt = Date.now();
-  return CACHE.manoobra;
-}
-async function warmCacheAplicaciones() {
-  if (CACHE.aplicaciones) return CACHE.aplicaciones;
-  CACHE.aplicaciones = (await getAplicaciones()) || [];
-  CACHE.loadedAt = Date.now();
-  return CACHE.aplicaciones;
+  return CACHE;
 }
 
 // Para cuando guardas algo y quieres refrescar SOLO un tipo
@@ -126,8 +225,6 @@ async function refreshCache(type) {
   if (type === "ventas") CACHE.ventas = await getVentas();
   if (type === "gastos") CACHE.gastos = await getGastos();
   if (type === "produccion") CACHE.produccion = await getProduccion();
-  if (type === "manoobra") CACHE.manoobra = await getManoObra();
-  if (type === "aplicaciones") CACHE.aplicaciones = await getAplicaciones();
   CACHE.loadedAt = Date.now();
 }
 
@@ -151,68 +248,8 @@ function initTabs() {
       document.querySelectorAll(".view").forEach(v => v.classList.remove("activeView"));
       btn.classList.add("active");
       document.getElementById(btn.dataset.view)?.classList.add("activeView");
-      // Lazy render del historial al entrar al tab
-      openTabAndRender(btn.dataset.view);
     });
   });
-
-  // Render inicial del tab activo
-  const active = document.querySelector(".tabBtn.active");
-  if (active) openTabAndRender(active.dataset.view);
-}
-
-
-async function openTabAndRender(viewId) {
-  const v = String(viewId || "");
-  // viewId viene como "viewVentas", etc.
-  const key = v.replace(/^view/i, "").toLowerCase(); // "ventas", "gastos", ...
-
-  try {
-    // base cache para todo lo mensual (ventas/gastos/produccion)
-    if (["ventas", "gastos", "produccion", "mensual"].includes(key)) {
-      await warmCache();
-    }
-
-    if (key === "ventas" && !LOADED.ventas) {
-      await renderVentas(CACHE.ventas);
-      LOADED.ventas = true;
-      return;
-    }
-
-    if (key === "gastos" && !LOADED.gastos) {
-      await renderGastos(CACHE.gastos);
-      LOADED.gastos = true;
-      return;
-    }
-
-    if (key === "produccion" && !LOADED.produccion) {
-      await renderProduccion(CACHE.produccion);
-      LOADED.produccion = true;
-      return;
-    }
-
-    if (key === "manoobra" && !LOADED.manoobra) {
-      const arr = await warmCacheManoObra();
-      await renderManoObraSimple(arr);
-      LOADED.manoobra = true;
-      return;
-    }
-
-    if (key === "aplicaciones" && !LOADED.aplicaciones) {
-      const arr = await warmCacheAplicaciones();
-      await renderAplicaciones(arr);
-      LOADED.aplicaciones = true;
-      return;
-    }
-
-    if (key === "mensual") {
-      await renderDashboard();
-      LOADED.mensual = true;
-      return;
-    }
-  } catch (err) {
-    console.error("openTabAndRender:", viewId, err);
-  }
 }
 
 // ---------- GLOBALS ----------
@@ -283,32 +320,35 @@ function fillClienteSelect() {
 
 // ---------- INIT ----------
 async function initApp() {
-  // Hooks (solo listeners)
+  // Hooks  
   hookVentas();
   hookGastos();
-  hookCatalogForms();
-  hookProduccion();
+  hookCatalogForms();   
   hookManoObraSimple();
-  hookAplicaciones();
-
+  await renderManoObraSimple();
   loadClientes();
   fillClienteSelect();
   hookClientesVentas();
+  hookAplicaciones();
+  await renderAplicaciones();
+
+
+
 
   initDashboard();
 
-  // Catálogos (Zonas / Empleados / Labores / Categorías)
+  // Carga catálogos + dropdowns
   await loadCatalogos();
-  // ✅ Carga inicial mínima (para que abra rápido)
+  await renderGastos();
+  hookProduccion();
+  
+
+  // Render inicial
+  await Promise.all([renderVentas(), renderGastos(), renderProduccion()]);
   await warmCache();
-
-  // ✅ Render inicial según el tab activo
-  const activeBtn = document.querySelector(".tabBtn.active");
-  const activeView = activeBtn?.dataset?.view || "viewMensual";
-  await openTabAndRender(activeView);
-
+  await renderDashboard();
+  
 }
-
 
 
 
@@ -746,7 +786,7 @@ function beginEditGasto(g) {
 
 
 
-async function renderGastos(arrIn) {
+async function renderGastos() {
   const list = document.getElementById("gastosList");
   if (!list) return;
 
@@ -781,6 +821,7 @@ async function renderGastos(arrIn) {
       <div class="itemTop">
         <strong>${escapeHtml(montoTxt)}</strong>
         <span class="muted">${escapeHtml(fechaTxt)}</span>
+        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
 
       <div class="muted">${escapeHtml(linea1)}</div>
@@ -789,6 +830,9 @@ async function renderGastos(arrIn) {
       ${g.nota ? `<div class="muted">${escapeHtml(g.nota)}</div>` : ""}
       ${g.reciboFoto ? `<img src="${g.reciboFoto}" alt="recibo" style="max-width:180px; border-radius:10px; margin-top:8px; display:block;">` : ""}
     `;
+
+    const delBtn = li.querySelector(".btnDelete");
+    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("gastos", g.id); });
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
@@ -1056,14 +1100,13 @@ function beginEditProduccion(p) {
 
 
 
-async function renderProduccion(arrIn) {
+async function renderProduccion() {
   const ul = document.getElementById("prodList");
   if (!ul) return;
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  const arr = (arrIn ?? CACHE.produccion ?? (await getProduccion())) || [];
-  CACHE.produccion = arr;
+  const arr = (await getProduccion()) || [];
   if (!arr.length) {
     ul.innerHTML = "<li>No hay producción.</li>";
     return;
@@ -1084,12 +1127,16 @@ async function renderProduccion(arrIn) {
       <div class="itemTop">
         <strong>${escapeHtml(librasTxt)}${escapeHtml(cajasTxt)}</strong>
         <span class="muted">${escapeHtml(fechaTxt)}</span>
+        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
 
       <div class="muted">${escapeHtml(zonaTxt || "Zona")}</div>
       ${respTxt ? `<div class="muted">👷 ${escapeHtml(respTxt)}</div>` : ""}
       ${p.nota ? `<div class="muted">${escapeHtml(p.nota)}</div>` : ""}
     `;
+    const delBtn = li.querySelector(".btnDelete");
+    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("produccion", p.id); });
+
     li.style.cursor = "pointer";
     li.title = "Click para editar";
     li.addEventListener("click", () => beginEditProduccion(p));
@@ -1217,95 +1264,97 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
   document.getElementById("moNewTaskNombre").value = "";
 });
 
+
   // Submit mano de obra simple
   form.addEventListener("submit", async (e) => {
-    e.preventDefault();
+  e.preventDefault();
 
-    const fecha = normalizeISODate(document.getElementById("moFecha")?.value);
-    const empleadoId = document.getElementById("moEmpleado")?.value || "";
-    const tareaId = document.getElementById("moTarea")?.value || "";
-    const horas = Number(document.getElementById("moHoras")?.value || 0);
-    const pagoDia = Number(document.getElementById("moPagoDia")?.value || 0);
-    const nota = (document.getElementById("moNota")?.value || "").trim();
+  const fecha = normalizeISODate(document.getElementById("moFecha").value);
+  const empleadoId = document.getElementById("moEmpleado").value;
+  const tareaId = document.getElementById("moTarea").value;
+  const horas = Number(document.getElementById("moHoras").value);
+  const pagoDia = Number(document.getElementById("moPagoDia").value);
+  const nota = document.getElementById("moNota").value.trim();
 
-    if (!fecha) return alert("Fecha inválida. Usa el calendario.");
-    if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
-    if (!tareaId || tareaId === "__NEW__") return alert("Selecciona una tarea.");
-    if (!isFinite(horas) || horas <= 0) return alert("Horas debe ser > 0.");
-    if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago día debe ser >= 0.");
+  if (!fecha) return alert("Fecha inválida. Usa el calendario.");
+  if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
+  if (!tareaId || tareaId === "__NEW__") return alert("Selecciona una tarea.");
+  if (!isFinite(horas) || horas <= 0) return alert("Horas debe ser > 0.");
+  if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago día debe ser >= 0.");
 
-    const emp = (EMPLEADOS || []).find(x => x.id === empleadoId) || {};
-    const task = (LABORES || []).find(x => x.id === tareaId) || {};
+  const emp = EMPLEADOS.find(x => x.id === empleadoId) || {};
+  const task = LABORES.find(x => x.id === tareaId) || {};
 
-    const empleadoNombre = String(emp.nombre || "").trim();
-    const tareaNombre = String(task.nombre || "").trim();
+  const payload = {
+    fecha,
+    empleadoId: emp.id || "",
+    empleadoNombre: emp.nombre || "",
+    tareaId: task.id || "",
+    tareaNombre: task.nombre || "",
+    horas: round2(horas),
+    pagoDia: round2(pagoDia),
+    nota,
+  };
 
-    const isEdit = (EDIT && EDIT.tipo === "mo" && EDIT.id);
-
-    const payload = {
-      id: isEdit ? EDIT.id : makeId(),
-      fecha,
-      empleadoId,
-      empleadoNombre,
-      tareaId,
-      tareaNombre,
-      horas: round2(horas),
-      pagoDia: round2(pagoDia),
-      nota,
-      createdAt: Date.now()
-    };
-
-    if (isEdit) {
-      await updateManoObra(payload.id, payload);
-      alert("✅ Mano de obra actualizada");
-    } else {
-      await addManoObra(payload);
-
-      // ✅ Gasto automático SOLO cuando es NUEVO
-      await addGasto({
-        id: makeId(),
-        fecha,
-        monto: round2(pagoDia),
-        categoriaId: "",
-        categoriaNombre: "Mano de obra",
-        categoria: "Mano de obra",
-        nota: `${empleadoNombre} — ${tareaNombre} • ${round2(horas)}h${nota ? " • " + nota : ""}`,
-        createdAt: Date.now()
-      });
-
-      alert("✅ Mano de obra guardada");
+  if (EDIT?.tipo === "mo" && EDIT?.id) {
+    // ✅ EDITAR
+    if (typeof updateManoObra !== "function") {
+      alert("Falta updateManoObra() en storage.js. Mándame storage.js y lo agrego.");
+      return;
     }
 
-    // reset modo edición
+    await updateManoObra(EDIT.id, payload);
+
     EDIT = { tipo: null, id: null };
     const submitBtn = document.querySelector("#moForm button[type='submit']");
     if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
     const cancelBtn = document.querySelector("#moForm .btnCancelEdit");
     if (cancelBtn) cancelBtn.style.display = "none";
 
-    // refrescar cache + dashboard
-    await refreshCache("gastos");
-    await refreshCache("manoobra");
-    await warmCache(); // por si no estaba
-    await renderDashboard();
+    alert("✅ Mano de obra actualizada");
+  } else {
+    // ✅ NUEVO
+    await addManoObra({
+      id: makeId(),
+      ...payload,
+      createdAt: Date.now(),
+    });
 
-    form.reset();
-    const f = document.getElementById("moFecha");
-    if (f) f.value = todayISO();
+    // ⚠️ aquí SOLO en “nuevo” creamos el gasto automático (para no duplicar al editar)
+    const empNombre = (emp && emp.nombre) ? emp.nombre : "";
+    const tareaNombre = (task && task.nombre) ? task.nombre : "";
 
-    // la lista se renderiza bajo demanda; si estás en el tab, se verá al instante
-    await renderManoObraSimple(CACHE.manoobra);
-  });
+    await addGasto({
+      id: makeId(),
+      fecha,
+      monto: round2(pagoDia),
+      categoriaId: "",
+      categoriaNombre: "Mano de obra",
+      categoria: "Mano de obra",
+      nota: `${empNombre} — ${tareaNombre} • ${round2(horas)}h${nota ? " • " + nota : ""}`,
+      createdAt: Date.now()
+    });
+
+    alert("✅ Mano de obra guardada");
+  }
+
+  // refrescar listas
+  await renderGastos();
+  await renderDashboard();
+
+  form.reset();
+  document.getElementById("moFecha").value = todayISO();
+  await renderManoObraSimple();
+});
 }
 
-async function renderManoObraSimple(arrIn) {
+async function renderManoObraSimple() {
   const ul = document.getElementById("moList");
   if (!ul) return;
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  await warmCacheManoObra();
-  const arr = (arrIn && Array.isArray(arrIn)) ? arrIn : (CACHE.manoobra || []);
+  const arr = (await getManoObra()) || [];
   if (!arr.length) {
     ul.innerHTML = "<li>No hay mano de obra.</li>";
     return;
@@ -1320,6 +1369,7 @@ async function renderManoObraSimple(arrIn) {
       <div class="ventaTop">
         <strong>${escapeHtml(fmtDate(m.fecha))} — ${escapeHtml(m.empleadoNombre || "")}</strong>
         <span class="ventaTotal">$${Number(m.pagoDia || 0).toFixed(2)}</span>
+        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
       <div class="ventaMeta">
         ${escapeHtml(m.tareaNombre || "")} • ${Number(m.horas || 0).toFixed(2)} h
@@ -1327,42 +1377,15 @@ async function renderManoObraSimple(arrIn) {
       </div>
     `;
 
+    const delBtn = li.querySelector(".btnDelete");
+    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("manoobra", m.id); });
+
     li.style.cursor = "pointer";
     li.title = "Click para editar";
     li.addEventListener("click", () => beginEditManoObra(m));
 
     ul.appendChild(li);
   });
-}
-
-
-function ensureCancelBtnMO() {
-  const form = document.getElementById("moForm");
-  if (!form) return;
-
-  let btn = form.querySelector(".btnCancelEdit");
-  if (btn) return;
-
-  btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btnCancelEdit";
-  btn.textContent = "Cancelar edición";
-  btn.style.marginLeft = "10px";
-  btn.style.display = "none";
-
-  btn.addEventListener("click", () => {
-    EDIT = { tipo: null, id: null };
-
-    const submitBtn = document.querySelector("#moForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
-
-    btn.style.display = "none";
-    form.reset();
-    const f = document.getElementById("moFecha");
-    if (f) f.value = todayISO();
-  });
-
-  form.appendChild(btn);
 }
 
 function beginEditManoObra(m) {
@@ -1553,7 +1576,6 @@ function hookVentas() {
     document.getElementById("ventaNewClienteBox")?.style && (document.getElementById("ventaNewClienteBox").style.display = "none");
   });
 
-
   ensureCancelBtn("ventaForm", () => {
     EDIT = { tipo: null, id: null };
     document.querySelector("#ventaForm button[type='submit']").textContent = "Guardar venta";
@@ -1620,13 +1642,12 @@ function hookClientesVentas() {
 
 
 
-async function renderVentas(arrIn) {
+async function renderVentas() {
   const list = document.getElementById("ventasList");
   if (!list) return;
 
   list.innerHTML = "<li>Cargando…</li>";
-const arr = (arrIn ?? CACHE.ventas ?? (await getVentas())) || [];
-  CACHE.ventas = arr;
+const arr = (await getVentas()) || [];
   if (!arr.length) {
     list.innerHTML = "<li>No hay ventas.</li>";
     return;
@@ -1672,6 +1693,7 @@ const arr = (arrIn ?? CACHE.ventas ?? (await getVentas())) || [];
       <div class="itemTop">
         <strong>${escapeHtml(totalTxt)}</strong>
         <span class="muted">${escapeHtml(fechaTxt)}</span>
+        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
 
       <div class="muted">${escapeHtml(clienteTxt || "Cliente")}</div>
@@ -1681,6 +1703,9 @@ const arr = (arrIn ?? CACHE.ventas ?? (await getVentas())) || [];
         &nbsp;|&nbsp; Balance: ${escapeHtml(balanceTxt)}
       </div>
     `;
+
+    const delBtn = li.querySelector(".btnDelete");
+    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("ventas", v.id); });
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
@@ -1883,7 +1908,7 @@ function beginEditAplicacion(a) {
   document.getElementById("appForm")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-async function renderAplicaciones(arrIn) {
+async function renderAplicaciones() {
   const ul = document.getElementById("appsList");
   if (!ul) return;
 
@@ -1891,8 +1916,7 @@ async function renderAplicaciones(arrIn) {
 
   let arr = [];
   try {
-    await warmCacheAplicaciones();
-    arr = (arrIn && Array.isArray(arrIn)) ? arrIn : (CACHE.aplicaciones || []);
+    arr = (await getAplicaciones()) || [];
   } catch (e) {
     ul.innerHTML = "<li>No se pudo cargar aplicaciones (backend no listo).</li>";
     console.error(e);
@@ -1928,11 +1952,15 @@ async function renderAplicaciones(arrIn) {
       <div class="itemTop">
         <strong>${escapeHtml(costoTxt)}</strong>
         <span class="muted">${escapeHtml(fechaTxt)}</span>
+        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
       <div class="muted">${escapeHtml(prodTxt || "Aplicación")}</div>
       ${meta ? `<div class="muted">${escapeHtml(meta)}</div>` : ""}
       ${a.nota ? `<div class="muted">${escapeHtml(a.nota)}</div>` : ""}
     `;
+
+    const delBtn = li.querySelector(".btnDelete");
+    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("aplicaciones", a.id); });
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
@@ -1965,7 +1993,7 @@ async function renderDashboard() {
 
   // Ventas
   ventas.forEach(v => {
-    if (String(v.fecha || "").startsWith(mes)) {
+    if (monthKeyFromAnyDate(v.fecha) === mes) {
       tv += Number(v.total) || 0;
       tl += Number(v.libras) || 0;
       cv++;
@@ -1974,7 +2002,7 @@ async function renderDashboard() {
 
   // Gastos
   gastos.forEach(g => {
-    if (String(g.fecha || "").startsWith(mes)) {
+    if (monthKeyFromAnyDate(g.fecha) === mes) {
       tg += Number(g.monto) || 0;
       cg++;
     }
@@ -1983,7 +2011,7 @@ async function renderDashboard() {
   // Producción
   let tProdLb = 0, tProdCajas = 0, cProd = 0;
   (produccion || []).forEach(p => {
-    if (String(p.fecha || "").startsWith(mes)) {
+    if (monthKeyFromAnyDate(p.fecha) === mes) {
       tProdLb += Number(p.libras) || 0;
       // tu app usa "cajas" (no "sacos")
       tProdCajas += Number(p.cajas) || 0;
@@ -2015,8 +2043,6 @@ async function renderDashboard() {
   // ✅ NUEVOS KPIs (Mensual PRO)
   setText("dashProdLbs", tProdLb.toFixed(2));
   setText("dashProdCajas", String(tProdCajas));
-  setText("dashManoObra", `-$${tMO.toFixed(2)}`);
-  setText("dashAplicaciones", `-$${tApps.toFixed(2)}`);
 
   
 
@@ -2025,7 +2051,7 @@ async function renderDashboard() {
 
 
 gastos.forEach(g => {
-  if (!String(g.fecha || "").startsWith(mes)) return;
+  if (monthKeyFromAnyDate(g.fecha) !== mes) return;
 
   const catRaw = (g.categoriaNombre || g.categoria || "Sin categoría");
   const cat = String(catRaw).trim() || "Sin categoría";
@@ -2052,7 +2078,7 @@ setText("dashAppLb", `$${appLb.toFixed(2)}`);
 
 
   // Mensual table (por ahora igual)
-  await renderMensualTable(ventas, gastos);
+  await renderMensualTable(ventas, gastos, produccion);
 
   // (Opcional) más adelante: renderMensualTablePro(ventas,gastos,produccion,manoObra,apps)
 }
@@ -2076,44 +2102,35 @@ function renderGastosPorCategoria(catMap) {
   `).join("");
 }
 
-async function renderMensualTable(ventas, gastos) {
+ 
+async function renderMensualTable(ventas, gastos, produccion) {
   const tbody = document.getElementById("mensualTable");
   if (!tbody) return;
 
-  const months = {};
-  (ventas || []).forEach(v => {
-    const m = String(v.fecha || "").slice(0, 7);
-    if (!m) return;
-    months[m] = months[m] || { ventas: 0, gastos: 0, libras: 0 };
-    months[m].ventas += Number(v.total) || 0;
-    months[m].libras += Number(v.libras) || 0;
-  });
-  (gastos || []).forEach(g => {
-    const m = String(g.fecha || "").slice(0, 7);
-    if (!m) return;
-    months[m] = months[m] || { ventas: 0, gastos: 0, libras: 0 };
-    months[m].gastos += Number(g.monto) || 0;
-  });
+  const rows = buildMonthlyPro(ventas || [], gastos || [], produccion || [], 12);
 
-  const keys = Object.keys(months).sort().reverse().slice(0, 12);
-  if (!keys.length) {
-    tbody.innerHTML = `<tr><td colspan="5">No hay datos todavía.</td></tr>`;
-    return;
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.mes}</td>
+      <td style="text-align:right;">$${r.ventas.toFixed(2)}</td>
+      <td style="text-align:right;">-$${r.gastos.toFixed(2)}</td>
+      <td style="text-align:right;">$${r.neto.toFixed(2)}</td>
+      <td style="text-align:right;">${r.libras.toFixed(2)}</td>
+      <td style="text-align:right;">$${r.costoLb.toFixed(2)}</td>
+      <td style="text-align:right;">$${r.margenLb.toFixed(2)}</td>
+      <td style="text-align:right;">${r.prodLb.toFixed(2)}</td>
+      <td style="text-align:right;">${String(r.prodCajas)}</td>
+      <td style="text-align:right;">-$${r.manoobra.toFixed(2)}</td>
+      <td style="text-align:right;">-$${r.apps.toFixed(2)}</td>
+      <td style="text-align:right;">$${r.moLb.toFixed(2)}</td>
+      <td style="text-align:right;">$${r.appsLb.toFixed(2)}</td>
+    </tr>
+  `).join("");
+
+  // si no hay data en ninguno de los 12 meses, pinta una fila vacía
+  if (!tbody.innerHTML.trim()) {
+    tbody.innerHTML = `<tr><td colspan="13" class="muted">No hay datos todavía.</td></tr>`;
   }
-
-  tbody.innerHTML = keys.map(m => {
-    const x = months[m];
-    const neto = x.ventas - x.gastos;
-    return `
-      <tr>
-        <td>${m}</td>
-        <td style="text-align:right;">$${x.ventas.toFixed(2)}</td>
-        <td style="text-align:right;">-$${x.gastos.toFixed(2)}</td>
-        <td style="text-align:right;">$${neto.toFixed(2)}</td>
-        <td style="text-align:right;">${x.libras.toFixed(2)}</td>
-      </tr>
-    `;
-  }).join("");
 }
 
 // ---------- UTILS ----------
