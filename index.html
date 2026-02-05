@@ -56,15 +56,37 @@
             </div>
 
 
-           <div class="row">
-              <label>
-                Libras vendidas
-                <input id="ventaLibras" type="number" min="0" step="0.01" required />
-              </label>
+          <div class="row">
+            <label>
+              Tipo de venta
+              <select id="ventaTipo" required>
+                <option value="LB">Por libras</option>
+                <option value="UN">Por unidades</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row" id="ventaRowLbs">
+            <label>
+              Libras vendidas
+              <input id="ventaLibras" type="number" min="0" step="0.01" />
+            </label>
 
             <label>
               Precio por libra (RD$)
-              <input id="ventaPrecio" type="number" min="0" step="0.01" required />
+              <input id="ventaPrecio" type="number" min="0" step="0.01" />
+            </label>
+          </div>
+
+          <div class="row" id="ventaRowUn" style="display:none;">
+            <label>
+              Unidades vendidas
+              <input id="ventaUnidades" type="number" min="0" step="1" />
+            </label>
+
+            <label>
+              Precio por unidad (RD$)
+              <input id="ventaPrecioUnidad" type="number" min="0" step="0.01" />
             </label>
           </div>
 
@@ -369,6 +391,11 @@
       <label>
         Pago día ($)
         <input id="moPagoDia" type="number" min="0" step="0.01" required />
+      </label>
+
+      <label>
+        Total ($)
+        <input id="moTotal" type="text" readonly />
       </label>
 
       <label>

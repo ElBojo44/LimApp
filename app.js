@@ -36,8 +36,8 @@ async function deleteItem(tipo, id) {
   if (tipo === "gastos") renderGastos(CACHE.gastos || []);
   if (tipo === "ventas") renderVentas(CACHE.ventas || []);
   if (tipo === "produccion") renderProduccion(CACHE.produccion || []);
-  if (tipo === "manoobra") renderManoObra(CACHE.manoobra || []);
-  if (tipo === "aplicaciones") renderAplicaciones(CACHE.aplicaciones || []);
+  if (tipo === "manoobra") await renderManoObraSimple();
+if (tipo === "aplicaciones") renderAplicaciones(CACHE.aplicaciones || []);
 
   // Si estás en Mensual, refresca KPIs
   if (document.getElementById("viewMensual")?.classList.contains("activeView")) {
@@ -91,16 +91,18 @@ function formatFechaES(iso) {
 }
 
 function preserveSelectValue(selectId, fn) {
-    const sel = document.getElementById(selectId);
-    const prev = sel ? sel.value : "";
-    fn(); // aquí refrescas el select (fillSelect o lo que sea)
-    const sel2 = document.getElementById(selectId);
-    if (sel2 && prev && [...sel2.options].some(o => o.value === prev)) {
-        sel2.value = prev;
-    }
+  const sel = document.getElementById(selectId);
+  const prev = sel ? sel.value : "";
+  fn(); // aquí refrescas el select (fillSelect o lo que sea)
+  const sel2 = document.getElementById(selectId);
+  if (sel2 && prev && [...sel2.options].some(o => o.value === prev)) {
+    sel2.value = prev;
+  } else if (sel2) {
+    sel2.selectedIndex = 0;
+  }
+  if (sel2) sel2.dispatchEvent(new Event("change"));
 }
 
-// --- Mensual PRO helpers ---
 function monthKeyFromAnyDate(v) {
   if (!v) return "";
   // Si ya viene como "YYYY-MM-DD" o "YYYY-MM"
@@ -191,6 +193,7 @@ function buildMonthlyPro(ventas = [], gastos = [], produccion = [], n = 12) {
   });
   return arr;
 }
+
 
 // ===============================
 // CACHE (nivel 1 - memoria)
@@ -1265,88 +1268,118 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
 });
 
 
-  // Submit mano de obra simple
-  form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-
-  const fecha = normalizeISODate(document.getElementById("moFecha").value);
-  const empleadoId = document.getElementById("moEmpleado").value;
-  const tareaId = document.getElementById("moTarea").value;
-  const horas = Number(document.getElementById("moHoras").value);
-  const pagoDia = Number(document.getElementById("moPagoDia").value);
-  const nota = document.getElementById("moNota").value.trim();
-
-  if (!fecha) return alert("Fecha inválida. Usa el calendario.");
-  if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
-  if (!tareaId || tareaId === "__NEW__") return alert("Selecciona una tarea.");
-  if (!isFinite(horas) || horas <= 0) return alert("Horas debe ser > 0.");
-  if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago día debe ser >= 0.");
-
-  const emp = EMPLEADOS.find(x => x.id === empleadoId) || {};
-  const task = LABORES.find(x => x.id === tareaId) || {};
-
-  const payload = {
-    fecha,
-    empleadoId: emp.id || "",
-    empleadoNombre: emp.nombre || "",
-    tareaId: task.id || "",
-    tareaNombre: task.nombre || "",
-    horas: round2(horas),
-    pagoDia: round2(pagoDia),
-    nota,
-  };
-
-  if (EDIT?.tipo === "mo" && EDIT?.id) {
-    // ✅ EDITAR
-    if (typeof updateManoObra !== "function") {
-      alert("Falta updateManoObra() en storage.js. Mándame storage.js y lo agrego.");
-      return;
-    }
-
-    await updateManoObra(EDIT.id, payload);
-
-    EDIT = { tipo: null, id: null };
-    const submitBtn = document.querySelector("#moForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
-    const cancelBtn = document.querySelector("#moForm .btnCancelEdit");
-    if (cancelBtn) cancelBtn.style.display = "none";
-
-    alert("✅ Mano de obra actualizada");
-  } else {
-    // ✅ NUEVO
-    await addManoObra({
-      id: makeId(),
-      ...payload,
-      createdAt: Date.now(),
-    });
-
-    // ⚠️ aquí SOLO en “nuevo” creamos el gasto automático (para no duplicar al editar)
-    const empNombre = (emp && emp.nombre) ? emp.nombre : "";
-    const tareaNombre = (task && task.nombre) ? task.nombre : "";
-
-    await addGasto({
-      id: makeId(),
-      fecha,
-      monto: round2(pagoDia),
-      categoriaId: "",
-      categoriaNombre: "Mano de obra",
-      categoria: "Mano de obra",
-      nota: `${empNombre} — ${tareaNombre} • ${round2(horas)}h${nota ? " • " + nota : ""}`,
-      createdAt: Date.now()
-    });
-
-    alert("✅ Mano de obra guardada");
+  
+  // Cambiar etiqueta "Horas" -> "Días" (nosotros pagamos por día)
+  const moHorasEl = document.getElementById("moHoras");
+  const moHorasLabel = moHorasEl?.closest("label");
+  if (moHorasLabel) {
+    // Reemplaza el texto visible del label (sin tocar el input)
+    const txtNode = Array.from(moHorasLabel.childNodes).find(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+    if (txtNode) txtNode.textContent = "Días de trabajo";
   }
 
-  // refrescar listas
-  await renderGastos();
-  await renderDashboard();
+  // Total (días x pago por día) - si existe el input #moTotal, lo mantiene actualizado
+  const moTotalEl = document.getElementById("moTotal");
+  const recalcMOTotal = () => {
+    const dias = Number(document.getElementById("moHoras")?.value || 0);
+    const pagoDia = Number(document.getElementById("moPagoDia")?.value || 0);
+    const total = round2((isFinite(dias) ? dias : 0) * (isFinite(pagoDia) ? pagoDia : 0));
+    if (moTotalEl) moTotalEl.value = moneyRD(total);
+  };
 
-  form.reset();
-  document.getElementById("moFecha").value = todayISO();
-  await renderManoObraSimple();
-});
+  document.getElementById("moHoras")?.addEventListener("input", recalcMOTotal);
+  document.getElementById("moPagoDia")?.addEventListener("input", recalcMOTotal);
+  recalcMOTotal();
+
+
+  // Submit mano de obra simple (pagamos por día)
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const fecha = normalizeISODate(document.getElementById("moFecha")?.value || "");
+    const empleadoId = document.getElementById("moEmpleado")?.value || "";
+    const tareaId = document.getElementById("moTarea")?.value || "";
+    const dias = Number(document.getElementById("moHoras")?.value || 0); // reutilizamos el input moHoras como "días"
+    const pagoDia = Number(document.getElementById("moPagoDia")?.value || 0);
+    const nota = (document.getElementById("moNota")?.value || "").trim();
+
+    if (!fecha) return alert("Fecha inválida. Usa el calendario.");
+    if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
+    if (!tareaId || tareaId === "__NEW__") return alert("Selecciona una tarea.");
+    if (!isFinite(dias) || dias <= 0) return alert("Días de trabajo debe ser > 0.");
+    if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago por día debe ser >= 0.");
+
+    const emp = (EMPLEADOS || []).find(x => x.id === empleadoId) || {};
+    const task = (LABORES || []).find(x => x.id === tareaId) || {};
+
+    const totalMO = round2(dias * pagoDia);
+
+    const payload = {
+      fecha,
+      empleadoId: emp.id || "",
+      empleadoNombre: emp.nombre || "",
+      tareaId: task.id || "",
+      tareaNombre: task.nombre || "",
+      horas: round2(dias),        // mantenemos el nombre "horas" en storage, pero ahora representa "días"
+      pagoDia: round2(pagoDia),
+      total: totalMO,             // campo extra (no rompe si la hoja lo ignora)
+      nota,
+    };
+
+    if (EDIT?.tipo === "mo" && EDIT?.id) {
+      // EDITAR
+      if (typeof updateManoObra !== "function") {
+        alert("Falta updateManoObra() en storage.js.");
+        return;
+      }
+
+      await updateManoObra(EDIT.id, payload);
+
+      EDIT = { tipo: null, id: null };
+      const submitBtn = document.querySelector("#moForm button[type='submit']");
+      if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
+      const cancelBtn = document.querySelector("#moForm .btnCancelEdit");
+      if (cancelBtn) cancelBtn.style.display = "none";
+
+      alert("✅ Mano de obra actualizada");
+    } else {
+      // NUEVO
+      await addManoObra({
+        id: makeId(),
+        ...payload,
+        createdAt: Date.now(),
+      });
+
+      // ⚠️ Solo en “nuevo” creamos el gasto automático (para no duplicar al editar)
+      const empNombre = (emp && emp.nombre) ? emp.nombre : "";
+      const tareaNombre = (task && task.nombre) ? task.nombre : "";
+
+      await addGasto({
+        id: makeId(),
+        fecha,
+        monto: totalMO,
+        categoriaId: "",
+        categoriaNombre: "Mano de obra",
+        categoria: "Mano de obra",
+        nota: `${empNombre} — ${tareaNombre} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${nota ? " • " + nota : ""}`,
+        createdAt: Date.now()
+      });
+
+      alert("✅ Mano de obra guardada");
+    }
+
+    // refrescar listas
+    await renderGastos();
+    await renderDashboard();
+
+    form.reset();
+    const moFechaEl = document.getElementById("moFecha");
+    if (moFechaEl) moFechaEl.value = todayISO();
+    await renderManoObraSimple();
+  });
+
 }
+
 
 async function renderManoObraSimple() {
   const ul = document.getElementById("moList");
@@ -1368,11 +1401,11 @@ async function renderManoObraSimple() {
     li.innerHTML = `
       <div class="ventaTop">
         <strong>${escapeHtml(fmtDate(m.fecha))} — ${escapeHtml(m.empleadoNombre || "")}</strong>
-        <span class="ventaTotal">$${Number(m.pagoDia || 0).toFixed(2)}</span>
+        <span class="ventaTotal">${moneyRD(toMoneyNumber(m.total ?? (Number(m.horas||0)*Number(m.pagoDia||0))))}</span>
         <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
       <div class="ventaMeta">
-        ${escapeHtml(m.tareaNombre || "")} • ${Number(m.horas || 0).toFixed(2)} h
+        ${escapeHtml(m.tareaNombre || "")} • ${Number(m.horas || 0).toFixed(2)} d
         ${m.nota ? `<div class="ventaNota">${escapeHtml(m.nota)}</div>` : ""}
       </div>
     `;
@@ -1386,6 +1419,36 @@ async function renderManoObraSimple() {
 
     ul.appendChild(li);
   });
+}
+
+
+function ensureCancelBtnMO() {
+  const form = document.getElementById("moForm");
+  if (!form) return;
+
+  let btn = form.querySelector(".btnCancelEdit");
+  if (btn) return;
+
+  btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btnCancelEdit";
+  btn.textContent = "Cancelar edición";
+  btn.style.marginLeft = "10px";
+  btn.style.display = "none";
+
+  btn.addEventListener("click", () => {
+    EDIT = { tipo: null, id: null };
+
+    const submitBtn = document.querySelector("#moForm button[type='submit']");
+    if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
+
+    btn.style.display = "none";
+    form.reset();
+    const f = document.getElementById("moFecha");
+    if (f) f.value = todayISO();
+  });
+
+  form.appendChild(btn);
 }
 
 function beginEditManoObra(m) {
@@ -1412,6 +1475,14 @@ function beginEditManoObra(m) {
   const pago = document.getElementById("moPagoDia");
   if (pago) pago.value = m.pagoDia ?? "";
 
+  // total (si existe campo)
+  const moTotalEl = document.getElementById("moTotal");
+  if (moTotalEl) {
+    const dias = Number(m.horas || 0);
+    const pagoDia = Number(m.pagoDia || 0);
+    moTotalEl.value = moneyRD(round2(dias * pagoDia));
+  }
+
   const nota = document.getElementById("moNota");
   if (nota) nota.value = (m.nota || "").trim();
 
@@ -1436,6 +1507,11 @@ function hookVentas() {
 
   const elFecha = document.getElementById("ventaFecha");
   const elCliente = document.getElementById("ventaCliente");
+  const elTipo = document.getElementById("ventaTipo");
+  const elRowLbs = document.getElementById("ventaRowLbs");
+  const elRowUn  = document.getElementById("ventaRowUn");
+  const elUnidades = document.getElementById("ventaUnidades");
+  const elPrecioUn = document.getElementById("ventaPrecioUnidad");
   const elLibras = document.getElementById("ventaLibras");
   const elPrecio = document.getElementById("ventaPrecio");
   const elTotal = document.getElementById("ventaTotal");
@@ -1449,11 +1525,22 @@ function hookVentas() {
 
   if (elFecha && !elFecha.value) elFecha.value = todayISO();
 
-  // Recalcula total/balance en vivo
+  // Toggle UI + Recalcula total/balance en vivo
+  const applyTipoUI = () => {
+    const tipo = String(elTipo?.value || "LB");
+    const isUN = (tipo === "UN");
+    if (elRowLbs) elRowLbs.style.display = isUN ? "none" : "";
+    if (elRowUn)  elRowUn.style.display  = isUN ? "" : "none";
+  };
+
   const recalc = () => {
-    const libras = Number(elLibras?.value || 0);
-    const precio = Number(elPrecio?.value || 0);
-    const total = (isFinite(libras) ? libras : 0) * (isFinite(precio) ? precio : 0);
+    const tipo = String(elTipo?.value || "LB");
+    const isUN = (tipo === "UN");
+
+    const qty = Number((isUN ? elUnidades?.value : elLibras?.value) || 0);
+    const price = Number((isUN ? elPrecioUn?.value : elPrecio?.value) || 0);
+
+    const total = (isFinite(qty) ? qty : 0) * (isFinite(price) ? price : 0);
 
     // Si cobrado está vacío, lo tratamos como 0 para cálculo visual
     const cobrado = Number(elCobrado?.value || 0);
@@ -1463,14 +1550,22 @@ function hookVentas() {
     if (elBalance) elBalance.value = moneyRD(balance);
   };
 
-  [elLibras, elPrecio, elCobrado].forEach(el => el?.addEventListener("input", recalc));
+  [elLibras, elPrecio, elUnidades, elPrecioUn, elCobrado].forEach(el => el?.addEventListener("input", recalc));
+  elTipo?.addEventListener("change", () => { applyTipoUI(); recalc(); });
   elEstado?.addEventListener("change", () => {
     // si marcan Pagado y no han puesto cobrado, autocompleta con total
     if (!elCobrado) return recalc();
     const estado = String(elEstado.value || "");
+    const tipoVenta = String(elTipo?.value || "LB");
+
     const libras = Number(elLibras?.value || 0);
     const precio = Number(elPrecio?.value || 0);
-    const total = (isFinite(libras) ? libras : 0) * (isFinite(precio) ? precio : 0);
+    const unidades = Number(elUnidades?.value || 0);
+    const precioUnidad = Number(elPrecioUn?.value || 0);
+
+    const qty = (tipoVenta === "UN") ? unidades : libras;
+    const price = (tipoVenta === "UN") ? precioUnidad : precio;
+    const total = round2((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0));
 
     if (estado === "Pagado" && (elCobrado.value === "" || Number(elCobrado.value) === 0)) {
       elCobrado.value = String(round2(total));
@@ -1500,6 +1595,7 @@ function hookVentas() {
   });
 
   // inicial
+  applyTipoUI();
   recalc();
 
   form.addEventListener("submit", async e => {
@@ -1517,20 +1613,27 @@ function hookVentas() {
       "";
 
 
+    const tipoVenta = String(elTipo?.value || "LB");
+
     const libras = Number(elLibras?.value || 0);
     const precio = Number(elPrecio?.value || 0);
+    const unidades = Number(elUnidades?.value || 0);
+    const precioUnidad = Number(elPrecioUn?.value || 0);
+
+    const qty = (tipoVenta === "UN") ? unidades : libras;
+    const price = (tipoVenta === "UN") ? precioUnidad : precio;
     const metodo = String(elMetodo?.value || "");
     const estado = String(elEstado?.value || "");
     const nota = (elNota?.value || "").trim();
 
     if (!fecha) return alert("Fecha requerida");
     if (!clienteNombre) return alert("Cliente requerido");
-    if (!isFinite(libras) || libras <= 0) return alert("Libras debe ser > 0");
-    if (!isFinite(precio) || precio < 0) return alert("Precio debe ser >= 0");
+    if (!isFinite(qty) || qty <= 0) return alert((tipoVenta === "UN") ? "Unidades debe ser > 0" : "Libras debe ser > 0");
+    if (!isFinite(price) || price < 0) return alert((tipoVenta === "UN") ? "Precio por unidad debe ser >= 0" : "Precio por libra debe ser >= 0");
     if (!metodo) return alert("Selecciona método de cobro");
     if (!estado) return alert("Selecciona estado de cobro");
 
-    const total = round2(libras * precio);
+    const total = round2(qty * price);
 
     // cobrado: si vacío -> 0, si Pagado y vacío -> total
     let cobrado = Number(elCobrado?.value || 0);
@@ -1548,6 +1651,9 @@ function hookVentas() {
       fecha,
       clienteId,
       cliente: clienteNombre,
+      tipoVenta,
+      unidades: round2(unidades),
+      precioUnidad: round2(precioUnidad),
       libras: round2(libras),
       precio: round2(precio),
       total,
@@ -1575,6 +1681,24 @@ function hookVentas() {
     }
     document.getElementById("ventaNewClienteBox")?.style && (document.getElementById("ventaNewClienteBox").style.display = "none");
   });
+
+  function ensureCancelBtn(formId, onCancel) {
+    const form = document.getElementById(formId);
+    if (!form) return;
+
+    let btn = form.querySelector(".btnCancelEdit");
+    if (btn) return;
+
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btnCancelEdit";
+    btn.textContent = "Cancelar edición";
+    btn.style.marginLeft = "10px";
+    btn.style.display = "none";
+
+    btn.addEventListener("click", onCancel);
+    form.appendChild(btn);
+  }
 
   ensureCancelBtn("ventaForm", () => {
     EDIT = { tipo: null, id: null };
@@ -1664,6 +1788,13 @@ const arr = (await getVentas()) || [];
     const totalNum = toMoneyNumber(v.total);
     const totalTxt = moneyRD(totalNum);
 
+    const tipoVenta = String(v.tipoVenta || "LB");
+    const unidades = Number(v.unidades ?? v.unidadesVendidas ?? v.cantidadUnidades ?? 0);
+    const libras = Number(v.libras ?? 0);
+    const qtyNumRaw = (tipoVenta === "UN") ? unidades : libras;
+    const qtyNum = Number.isFinite(qtyNumRaw) ? qtyNumRaw : 0;
+    const qtyTxt = (tipoVenta === "UN") ? `${round2(qtyNum)} unid` : `${round2(qtyNum)} lb`;
+
     const cobradoNum = toMoneyNumber(v.montoCobrado ?? v.cobrado ?? v.pagado ?? 0);
 
     // si existe balance úsalo; si no, calcúlalo con total - cobrado
@@ -1697,6 +1828,7 @@ const arr = (await getVentas()) || [];
       </div>
 
       <div class="muted">${escapeHtml(clienteTxt || "Cliente")}</div>
+      <div class="muted">${escapeHtml(qtyTxt)}</div>
 
       <div class="muted">
         ${escapeHtml(estadoTxt)}${fotoTag}
@@ -1728,8 +1860,21 @@ function beginEditVenta(v) {
   const balEl    = document.getElementById("ventaBalance");
   const notaEl   = document.getElementById("ventaNota");
   const clienteSel = document.getElementById("ventaCliente");
+  const tipoEl = document.getElementById("ventaTipo");
+  const rowLbs = document.getElementById("ventaRowLbs");
+  const rowUn  = document.getElementById("ventaRowUn");
+  const unEl   = document.getElementById("ventaUnidades");
+  const puEl   = document.getElementById("ventaPrecioUnidad");
 
   if (fechaEl) fechaEl.value = String(v.fecha || "").includes("T") ? String(v.fecha).slice(0,10) : (v.fecha || "");
+  const tipoVenta = String(v.tipoVenta || "LB");
+  if (tipoEl) tipoEl.value = (tipoVenta === "UN") ? "UN" : "LB";
+  const isUN = (tipoVenta === "UN");
+  if (rowLbs) rowLbs.style.display = isUN ? "none" : "";
+  if (rowUn)  rowUn.style.display  = isUN ? "" : "none";
+
+  if (unEl) unEl.value = v.unidades ?? (isUN ? (v.libras ?? "") : "");
+  if (puEl) puEl.value = v.precioUnidad ?? (isUN ? (v.precio ?? "") : "");
   if (librasEl) librasEl.value = v.libras ?? "";
   if (precioEl) precioEl.value = v.precio ?? "";
   if (totalEl)  totalEl.value  = v.total ?? "";
@@ -2198,4 +2343,3 @@ async function updateAplicacion(id, patch) {
     data: { id, ...(patch || {}) },
   });
 }
-

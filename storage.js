@@ -1,7 +1,6 @@
 // ===== Google Sheets (Apps Script Web App) =====
-
-const API_URL = "https://limones-proxy.elbojo.workers.dev";
-
+const API_URL =
+  "https://limones-proxy.elbojo.workers.dev/";
 
 // --- helpers ---
 async function apiGet(type) {
@@ -14,15 +13,18 @@ async function apiGet(type) {
 }
 
 // POST genérico: permite enviar body completo (action:update/delete, etc.)
+// Devuelve el JSON del servidor ({ok:true,...}) para que app.js pueda mostrar errores.
 async function apiPostBody(bodyObj) {
   const res = await fetch(API_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" }, // ya tienes Worker, no hace falta text/plain
+    // Con Worker ya NO necesitamos "text/plain" para evitar CORS.
+    // Pero si tú prefieres dejarlo en text/plain, igual funciona.
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(bodyObj || {}),
   });
 
+  // Leemos como texto primero para poder loggear si viene HTML.
   const text = await res.text();
-
   let json;
   try {
     json = JSON.parse(text);
@@ -31,11 +33,24 @@ async function apiPostBody(bodyObj) {
     throw new Error(`Servidor devolvió HTML/no-JSON. Status: ${res.status}`);
   }
 
-  if (!res.ok) throw new Error(`POST failed: ${res.status}`);
+  if (!res.ok) throw new Error(json?.error || `POST failed: ${res.status}`);
   if (!json.ok) throw new Error(json.error || "POST error");
-  return true;
+  return json;
 }
 
+// ✅ Compat: soporta ambas firmas
+// 1) apiPost(type, data)
+// 2) apiPost({type, data, action, id})  <-- usado por delete/update en app.js
+async function apiPost(a, b) {
+  if (typeof a === "string") {
+    return apiPostBody({ type: a, data: b });
+  }
+  return apiPostBody(a || {});
+}
+
+function makeId() {
+  return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9);
+}
 
 function toDateNum(iso) {
   // iso esperado: YYYY-MM-DD
