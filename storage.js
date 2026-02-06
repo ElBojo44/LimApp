@@ -107,8 +107,8 @@ function toDateNum(iso) {
 // ===============================
 // Ventas (Sheets)
 // ===============================
-async function getVentas() {
-  const rows = await apiGet("ventas");
+async function getVentas(opts = {}) {
+  const rows = await apiGet("ventas", opts);
   return rows
     .map((v) => ({
       ...v,
@@ -212,7 +212,7 @@ async function getProduccion(opts = {}) {
     .map((p) => ({
       ...p,
       libras: Number(p.libras) || 0,
-      sacos: Number(p.sacos) || 0,
+      cajas: Number(p.cajas ?? p.sacos ?? 0) || 0,
       createdAt: Number(p.createdAt) || 0,
     }))
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -225,8 +225,8 @@ async function addProduccion(item) {
 // ===============================
 // Mano de obra (Sheets)
 // ===============================
-async function getManoObra() {
-  const rows = await apiGet("manoobra");
+async function getManoObra(opts = {}) {
+  const rows = await apiGet("manoobra", opts);
   return rows
     .map((m) => ({
       ...m,
@@ -244,8 +244,8 @@ async function addManoObra(item) {
 // ===============================
 // Aplicaciones (Sheets) - si tu backend no lo soporta todavía, lo dejamos local opcional
 // ===============================
-async function getAplicaciones() {
-  const rows = await apiGet("aplicaciones");
+async function getAplicaciones(opts = {}) {
+  const rows = await apiGet("aplicaciones", opts);
   return rows
     .map((a) => ({
       ...a,

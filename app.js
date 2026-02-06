@@ -215,12 +215,53 @@ function buildMonthlyPro(ventas = [], gastos = [], produccion = [], n = 12) {
 // ===============================
 // CACHE (nivel 1 - memoria)
 // ===============================
+// ===============================
+// CACHE (nivel 1 - memoria) + TTL
+// ===============================
 const CACHE = {
   ventas: null,
   gastos: null,
   produccion: null,
+  manoobra: null,
+  aplicaciones: null,
   loadedAt: 0,
 };
+
+const CACHE_TTL_MS = 60_000; // 60s (ajústalo)
+
+function cacheIsFresh() {
+  return CACHE.loadedAt && (Date.now() - CACHE.loadedAt) < CACHE_TTL_MS;
+}
+
+async function warmCache(opts = {}) {
+  const force = !!opts.force;
+
+  // si está fresco, no vuelvas a pegar al backend
+  if (!force && cacheIsFresh() && CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
+
+  const [v, g, p] = await Promise.all([
+    getVentas({ force }),       // si tu storage ignora force, no pasa nada
+    getGastos({ force }),
+    getProduccion({ force }),
+  ]);
+
+  CACHE.ventas = v || [];
+  CACHE.gastos = g || [];
+  CACHE.produccion = p || [];
+  CACHE.loadedAt = Date.now();
+
+  return CACHE;
+}
+
+// refresca SOLO un tipo (y deja lo demás intacto)
+async function refreshCache(type, opts = {}) {
+  const force = !!opts.force;
+  if (type === "ventas") CACHE.ventas = await getVentas({ force });
+  if (type === "gastos") CACHE.gastos = await getGastos({ force });
+  if (type === "produccion") CACHE.produccion = await getProduccion({ force });
+  CACHE.loadedAt = Date.now();
+}
+
 
 async function warmCache(opts = {}) {
   const force = !!opts.force;
@@ -820,14 +861,24 @@ async function saveGasto(e) {
   }
 
   // 🔄 refrescar caches para que el gasto aparezca inmediatamente
-  try { CACHE.gastos = null; CACHE.loadedAt = 0; } catch {}
+  // 🔥 Actualiza CACHE local (sin re-fetch)
+await warmCache(); // asegura que CACHE exista
 
-  document.getElementById("gastoForm")?.reset();
-  setGastoDefaultDate();
+if (EDIT?.tipo === null) {
+  // fue ADD (ya saliste de EDIT arriba)
+  // si quieres, puedes empujar el nuevo registro aquí (si lo tienes)
+} 
+// En update/add, lo más simple: refresca SOLO gastos una vez cada tanto:
+await refreshCache("gastos"); // 1 solo fetch, no 3
 
-  await renderGastos({ force: true });
-  await renderDashboard({ force: true });
+document.getElementById("gastoForm")?.reset();
+setGastoDefaultDate();
+
+await renderGastos();     // render desde cache
+scheduleDashboard();      // dashboard debounced
+
 }
+
 
 
 function beginEditGasto(g) {
@@ -871,7 +922,9 @@ async function renderGastos(opts = {}) {
   const list = document.getElementById("gastosList");
   if (!list) return;
 
-  const items = (await getGastos(opts)) || [];
+  await warmCache(opts);
+  const items = (CACHE.gastos || []);
+
   list.innerHTML = "";
 
   items.slice(0, 30).forEach(g => {
@@ -1187,7 +1240,8 @@ async function renderProduccion() {
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  const arr = (await getProduccion()) || [];
+  await warmCache();
+  const arr = (CACHE.produccion || []);
   if (!arr.length) {
     ul.innerHTML = "<li>No hay producción.</li>";
     return;
@@ -1776,23 +1830,7 @@ if (EDIT?.tipo === "venta" && EDIT?.id) {
     document.getElementById("ventaNewClienteBox")?.style && (document.getElementById("ventaNewClienteBox").style.display = "none");
   });
 
-  function ensureCancelBtn(formId, onCancel) {
-    const form = document.getElementById(formId);
-    if (!form) return;
-
-    let btn = form.querySelector(".btnCancelEdit");
-    if (btn) return;
-
-    btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btnCancelEdit";
-    btn.textContent = "Cancelar edición";
-    btn.style.marginLeft = "10px";
-    btn.style.display = "none";
-
-    btn.addEventListener("click", onCancel);
-    form.appendChild(btn);
-  }
+  
 
   ensureCancelBtn("ventaForm", () => {
     EDIT = { tipo: null, id: null };
@@ -1860,22 +1898,27 @@ function hookClientesVentas() {
 
 
 
-async function renderVentas() {
+async function renderVentas(opts = {}) {
   const list = document.getElementById("ventasList");
   if (!list) return;
 
   list.innerHTML = "<li>Cargando…</li>";
-const arr = (await getVentas()) || [];
+
+  // usa cache
+  await warmCache(opts);
+  const arr = (CACHE.ventas || []);
+
   if (!arr.length) {
     list.innerHTML = "<li>No hay ventas.</li>";
     return;
   }
 
   list.innerHTML = "";
+  const frag = document.createDocumentFragment();
 
   arr.slice(0, 10).forEach(v => {
-      const li = document.createElement("li");
-      li.className = "ventaItem"; 
+    const li = document.createElement("li");
+    li.className = "ventaItem";
 
     const fechaTxt = formatFechaES(v.fecha);
     const clienteTxt = (v.cliente || v.clienteNombre || "").trim();
@@ -1883,41 +1926,18 @@ const arr = (await getVentas()) || [];
     const totalTxt = moneyRD(totalNum);
 
     const tipoVenta = String(v.tipoVenta || "LB");
-    const unidades = Number(v.unidades ?? v.unidadesVendidas ?? v.cantidadUnidades ?? 0);
+    const unidades = Number(v.unidades ?? 0);
     const libras = Number(v.libras ?? 0);
-    const qtyNumRaw = (tipoVenta === "UN") ? unidades : libras;
-    const qtyNum = Number.isFinite(qtyNumRaw) ? qtyNumRaw : 0;   
+    const qtyNum = (tipoVenta === "UN") ? unidades : libras;
     const qtyTxt = (tipoVenta === "UN")
-     ? `🍋‍🟩 ${round2(qtyNum)} unid`
-     : `🍋‍🟩 ${round2(qtyNum)} lb`;
-
-
-
-
-    const cobradoNum = toMoneyNumber(v.montoCobrado ?? v.cobrado ?? v.pagado ?? 0);
-
-    // si existe balance úsalo; si no, calcúlalo con total - cobrado
-    let balanceNum = toMoneyNumber(v.balance);
-    const hasBalanceValue =
-      v.balance !== null &&
-      v.balance !== undefined &&
-      String(v.balance).trim() !== "";
-
-    const hasCobradoValue =
-      v.montoCobrado !== null &&
-      v.montoCobrado !== undefined &&
-      String(v.montoCobrado).trim() !== "";
-
-    if (!hasBalanceValue && hasCobradoValue) {
-      balanceNum = totalNum - toMoneyNumber(v.montoCobrado);
-    }
-
-
-    const balanceTxt = moneyRD(balanceNum);
-
+      ? `🍋‍🟩 ${round2(qtyNum)} unid`
+      : `🍋‍🟩 ${round2(qtyNum)} lb`;
 
     const estadoTxt = (v.estadoCobro || v.estado || "").trim();
-    const fotoTag = v.foto ? " 📷" : "";
+    const cobradoNum = toMoneyNumber(v.montoCobrado ?? 0);
+    const balanceNum = (v.balance !== null && v.balance !== undefined && String(v.balance).trim() !== "")
+      ? toMoneyNumber(v.balance)
+      : (totalNum - cobradoNum);
 
     li.innerHTML = `
       <div class="itemTop">
@@ -1930,23 +1950,28 @@ const arr = (await getVentas()) || [];
       <div class="muted limonVerde">${escapeHtml(qtyTxt)}</div>
 
       <div class="muted">
-        ${escapeHtml(estadoTxt)}${fotoTag}
-        &nbsp;|&nbsp; Balance: ${escapeHtml(balanceTxt)}
+        ${escapeHtml(estadoTxt)}
+        &nbsp;|&nbsp; Balance: ${escapeHtml(moneyRD(balanceNum))}
       </div>
 
       ${v.foto ? `<img src="${escapeHtml(v.foto)}" alt="foto" style="max-width:180px; border-radius:10px; margin-top:8px; display:block;">` : ""}
     `;
 
-    const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("ventas", v.id); });
+    li.querySelector(".btnDelete")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      deleteItem("ventas", v.id);
+    });
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
     li.addEventListener("click", () => beginEditVenta(v));
 
-    list.appendChild(li);
+    frag.appendChild(li);
   });
+
+  list.appendChild(frag);
 }
+
 
 function beginEditVenta(v) {
   EDIT = { tipo: "venta", id: v.id };
@@ -2355,6 +2380,15 @@ gastos.forEach(g => {
   if (k === "mano de obra" || k === "manoobra") tMO += monto;
   if (k === "aplicaciones" || k === "aplicacion" || k === "aplicaciones ") tApps += monto;
 });
+
+let _dashTimer = null;
+function scheduleDashboard(opts = {}) {
+  clearTimeout(_dashTimer);
+  _dashTimer = setTimeout(() => {
+    renderDashboard(opts).catch(console.error);
+  }, 120); // 120ms: agrupa renders seguidos (guardar + render lista + etc.)
+}
+
 
 renderGastosPorCategoria(catMap);
 
