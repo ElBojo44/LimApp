@@ -3,13 +3,55 @@ const API_URL =
   "https://limones-proxy.elbojo.workers.dev/";
 
 // --- helpers ---
-async function apiGet(type) {
-  const url = `${API_URL}?type=${encodeURIComponent(type)}&t=${Date.now()}`; // cache buster
-  const res = await fetch(url, { method: "GET", redirect: "follow", cache: "no-store" });
-  if (!res.ok) throw new Error(`GET ${type} failed: ${res.status}`);
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.error || "GET error");
-  return json.data || [];
+// --- GET cache (in-app) ---
+// Reduce latency by caching GET responses + de-duping concurrent calls.
+// TTL is short on purpose: enough to make the UI feel instant, but still fresh.
+const GET_CACHE_TTL_MS = 12_000; // 12s
+const GET_CACHE = new Map(); // type -> { ts, data, promise }
+
+function invalidateGetCache(type) {
+  if (!type) return;
+  GET_CACHE.delete(String(type));
+}
+
+async function apiGet(type, opts = {}) {
+  const t = String(type || "");
+  if (!t) return [];
+  const force = !!opts.force;
+
+  const now = Date.now();
+  const hit = GET_CACHE.get(t);
+
+  // Fresh cached data
+  if (!force && hit?.data && (now - (hit.ts || 0) < GET_CACHE_TTL_MS)) {
+    return hit.data;
+  }
+
+  // In-flight de-dupe
+  if (!force && hit?.promise) {
+    return hit.promise;
+  }
+
+  const url = `${API_URL}?type=${encodeURIComponent(t)}&t=${Date.now()}`; // cache buster (server)
+  const p = fetch(url, { method: "GET", redirect: "follow", cache: "no-store" })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`GET ${t} failed: ${res.status}`);
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "GET error");
+      const data = json.data || [];
+      GET_CACHE.set(t, { ts: Date.now(), data });
+      return data;
+    })
+    .finally(() => {
+      // clear promise slot but keep data
+      const cur = GET_CACHE.get(t);
+      if (cur?.promise) {
+        GET_CACHE.set(t, { ts: cur.ts, data: cur.data });
+      }
+    });
+
+  GET_CACHE.set(t, { ts: now, data: hit?.data, promise: p });
+  return p;
 }
 
 // POST genérico: permite enviar body completo (action:update/delete, etc.)
@@ -35,6 +77,8 @@ async function apiPostBody(bodyObj) {
 
   if (!res.ok) throw new Error(json?.error || `POST failed: ${res.status}`);
   if (!json.ok) throw new Error(json.error || "POST error");
+  // Invalidate GET cache for this type so next UI refresh is instant + correct
+  try { invalidateGetCache(bodyObj?.type); } catch {}
   return json;
 }
 
@@ -83,8 +127,8 @@ async function addVenta(venta) {
 // ===============================
 // Gastos (Sheets)  ✅ FIX: NO se sobreescribe con localStorage
 // ===============================
-async function getGastos() {
-  const rows = await apiGet("gastos");
+async function getGastos(opts = {}) {
+  const rows = await apiGet("gastos", opts);
 
   const norm = rows.map((g) => {
     const created = Number(g.createdAt);
@@ -162,8 +206,8 @@ async function addEmpleado(emp) {
 // ===============================
 // Producción (Sheets)
 // ===============================
-async function getProduccion() {
-  const rows = await apiGet("produccion");
+async function getProduccion(opts = {}) {
+  const rows = await apiGet("produccion", opts);
   return rows
     .map((p) => ({
       ...p,

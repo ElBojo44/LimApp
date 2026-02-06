@@ -78,6 +78,9 @@ function toMoneyNumber(x) {
   const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : 0;
 }
+
+
+
 function formatFechaES(iso) {
   if (!iso) return "";
   const s = String(iso);
@@ -89,6 +92,20 @@ function formatFechaES(iso) {
   const meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
   return `${d} ${meses[m - 1]} ${y}`;
 }
+
+function formatMesES(yyyyMm) {
+  if (!yyyyMm) return "";
+  const [y, m] = String(yyyyMm).split("-").map(Number);
+  if (!y || !m) return yyyyMm;
+
+  const meses = [
+    "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+    "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
+  ];
+
+  return `${meses[m - 1]} ${y}`;
+}
+
 
 function preserveSelectValue(selectId, fn) {
   const sel = document.getElementById(selectId);
@@ -205,14 +222,15 @@ const CACHE = {
   loadedAt: 0,
 };
 
-async function warmCache() {
-  // si ya está, no vuelve a pedir
-  if (CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
+async function warmCache(opts = {}) {
+  const force = !!opts.force;
+  // si ya está, no vuelve a pedir (a menos que force)
+  if (!force && CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
 
   const [v, g, p] = await Promise.all([
-    getVentas(),
-    getGastos(),
-    getProduccion(),
+    getVentas(opts),
+    getGastos(opts),
+    getProduccion(opts),
   ]);
 
   CACHE.ventas = v || [];
@@ -323,34 +341,34 @@ function fillClienteSelect() {
 
 // ---------- INIT ----------
 async function initApp() {
-  // Hooks  
+  // Hooks (solo listeners, nada de network aquí)
   hookVentas();
   hookGastos();
-  hookCatalogForms();   
+  hookCatalogForms();
   hookManoObraSimple();
-  await renderManoObraSimple();
+  hookAplicaciones();
+
+  // Catálogos locales (clientes)
   loadClientes();
   fillClienteSelect();
   hookClientesVentas();
-  hookAplicaciones();
-  await renderAplicaciones();
-
-
-
 
   initDashboard();
 
-  // Carga catálogos + dropdowns
+  // ✅ Carga inicial en paralelo para que “abra” más rápido
   await loadCatalogos();
-  await renderGastos();
   hookProduccion();
-  
 
-  // Render inicial
-  await Promise.all([renderVentas(), renderGastos(), renderProduccion()]);
-  await warmCache();
+  await Promise.all([
+    renderVentas(),
+    renderGastos(),
+    renderProduccion(),
+    renderManoObraSimple(),
+    renderAplicaciones(),
+  ]);
+
+  // Dashboard usa cache interno (storage.js) para no “machacar” el backend
   await renderDashboard();
-  
 }
 
 
@@ -556,6 +574,63 @@ function fileToDataURL(file) {
   });
 }
 
+async function compressImageFile(file, opts = {}) {
+  // Comprime fotos (ideal para móviles) antes de guardarlas como dataURL.
+  // Fallback: si algo falla, devolvemos el dataURL original.
+  if (!file) return "";
+  const type = String(file.type || "").toLowerCase();
+  if (!type.startsWith("image/")) return await fileToDataURL(file);
+
+  const maxSize = Number(opts.maxSize || 1600);      // px
+  const quality1 = Number(opts.quality || 0.75);     // 0..1
+  const mimeType = String(opts.mimeType || "image/jpeg");
+
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = reject;
+      i.src = URL.createObjectURL(file);
+    });
+
+    let w0 = img.naturalWidth || img.width;
+    let h0 = img.naturalHeight || img.height;
+    if (!w0 || !h0) throw new Error("invalid image dims");
+
+    const scale = Math.min(1, maxSize / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * scale));
+    const h = Math.max(1, Math.round(h0 * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) throw new Error("no canvas ctx");
+
+    // Fondo blanco (por si viene con transparencia)
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const toData = (q) => canvas.toDataURL(mimeType, q);
+
+    let dataUrl = toData(quality1);
+
+    // Si todavía queda demasiado grande (~> 1.5MB), bajamos un poco calidad.
+    const approxBytes = Math.round((dataUrl.length - (dataUrl.indexOf(",") + 1)) * 0.75);
+    if (approxBytes > 1_500_000) {
+      dataUrl = toData(0.65);
+    }
+
+    URL.revokeObjectURL(img.src);
+    return dataUrl;
+  } catch (err) {
+    console.warn("compressImageFile fallback:", err);
+    try { return await fileToDataURL(file); } catch { return ""; }
+  }
+}
+
+
 function ensureCancelBtnGasto() {
   const form = document.getElementById("gastoForm");
   if (!form) return;
@@ -696,7 +771,7 @@ async function saveGasto(e) {
 
   // recibo nuevo (si lo suben). Si no suben nada, no vamos a borrar el viejo.
   const file = document.getElementById("gastoRecibo")?.files?.[0] || null;
-  const reciboFotoNew = await fileToDataURL(file);
+  const reciboFotoNew = file ? await compressImageFile(file) : "";
 
   if (!fecha) return alert("Fecha inválida.");
   if (!categoriaId) return alert("Categoría requerida: selecciona una.");
@@ -744,11 +819,14 @@ async function saveGasto(e) {
     alert("✅ Gasto guardado");
   }
 
+  // 🔄 refrescar caches para que el gasto aparezca inmediatamente
+  try { CACHE.gastos = null; CACHE.loadedAt = 0; } catch {}
+
   document.getElementById("gastoForm")?.reset();
   setGastoDefaultDate();
 
-  await renderGastos();
-  await renderDashboard();
+  await renderGastos({ force: true });
+  await renderDashboard({ force: true });
 }
 
 
@@ -789,18 +867,18 @@ function beginEditGasto(g) {
 
 
 
-async function renderGastos() {
+async function renderGastos(opts = {}) {
   const list = document.getElementById("gastosList");
   if (!list) return;
 
-  const items = (await getGastos()) || [];
+  const items = (await getGastos(opts)) || [];
   list.innerHTML = "";
 
   items.slice(0, 30).forEach(g => {
     const li = document.createElement("li");
 
     // ✅ usa el mismo estilo “card” que Ventas / Producción
-    li.className = "ventaItem";
+    li.className = "ventaItem manoItem";
 
     const montoTxt = moneyRD(g.monto || 0);
     const fechaTxt = formatFechaES(g.fecha || g.createdAt);
@@ -828,7 +906,7 @@ async function renderGastos() {
       </div>
 
       <div class="muted">${escapeHtml(linea1)}</div>
-      ${linea2 ? `<div class="muted">${escapeHtml(linea2)}</div>` : ""}
+      ${linea2 ? `<div class=\"muted\">👷 ${escapeHtml(linea2)}</div>` : ""}
 
       ${g.nota ? `<div class="muted">${escapeHtml(g.nota)}</div>` : ""}
       ${g.reciboFoto ? `<img src="${g.reciboFoto}" alt="recibo" style="max-width:180px; border-radius:10px; margin-top:8px; display:block;">` : ""}
@@ -1399,12 +1477,12 @@ async function renderManoObraSimple() {
     li.className = "ventaItem";
 
     li.innerHTML = `
-      <div class="ventaTop">
-        <strong>${escapeHtml(fmtDate(m.fecha))} — ${escapeHtml(m.empleadoNombre || "")}</strong>
-        <span class="ventaTotal">${moneyRD(toMoneyNumber(m.total ?? (Number(m.horas||0)*Number(m.pagoDia||0))))}</span>
+      <div class="itemTop">
+        <strong>${escapeHtml(fmtDate(m.fecha))} — 👷 ${escapeHtml(m.empleadoNombre || "")}</strong>
+        <span class="muted">${moneyRD(toMoneyNumber(m.total ?? (Number(m.horas||0)*Number(m.pagoDia||0))))}</span>
         <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
-      <div class="ventaMeta">
+      <div class="muted">
         ${escapeHtml(m.tareaNombre || "")} • ${Number(m.horas || 0).toFixed(2)} d
         ${m.nota ? `<div class="ventaNota">${escapeHtml(m.nota)}</div>` : ""}
       </div>
@@ -1644,27 +1722,43 @@ function hookVentas() {
 
     // foto
     const file = elFoto?.files?.[0] || null;
-    const foto = await fileToDataURL(file);
+    const foto = file ? await compressImageFile(file) : "";
 
-    await addVenta({
-      id: makeId(),
-      fecha,
-      clienteId,
-      cliente: clienteNombre,
-      tipoVenta,
-      unidades: round2(unidades),
-      precioUnidad: round2(precioUnidad),
-      libras: round2(libras),
-      precio: round2(precio),
-      total,
-      metodoCobro: metodo,
-      estadoCobro: estado,
-      montoCobrado: round2(cobrado),
-      balance,
-      nota,
-      foto, // dataURL
-      createdAt: Date.now()
-    });
+    const payload = {
+  fecha,
+  clienteId,
+  cliente: clienteNombre,
+  tipoVenta,
+  unidades: round2(unidades),
+  precioUnidad: round2(precioUnidad),
+  libras: round2(libras),
+  precio: round2(precio),
+  total,
+  metodoCobro: metodo,
+  estadoCobro: estado,
+  montoCobrado: round2(cobrado),
+  balance,
+  nota,
+  foto,
+  createdAt: Date.now()
+};
+
+if (EDIT?.tipo === "venta" && EDIT?.id) {
+  // EDITAR
+  if (typeof updateVenta !== "function") {
+    alert("Falta updateVenta() en storage.js.");
+    return;
+  }
+  await updateVenta(EDIT.id, { ...payload, id: EDIT.id });
+
+  EDIT = { tipo: null, id: null };
+  alert("✅ Venta actualizada");
+} else {
+  // NUEVA
+  await addVenta({ id: makeId(), ...payload });
+  alert("✅ Venta guardada");
+}
+
 
     form.reset();
     if (elFecha) elFecha.value = todayISO();
@@ -1792,8 +1886,13 @@ const arr = (await getVentas()) || [];
     const unidades = Number(v.unidades ?? v.unidadesVendidas ?? v.cantidadUnidades ?? 0);
     const libras = Number(v.libras ?? 0);
     const qtyNumRaw = (tipoVenta === "UN") ? unidades : libras;
-    const qtyNum = Number.isFinite(qtyNumRaw) ? qtyNumRaw : 0;
-    const qtyTxt = (tipoVenta === "UN") ? `${round2(qtyNum)} unid` : `${round2(qtyNum)} lb`;
+    const qtyNum = Number.isFinite(qtyNumRaw) ? qtyNumRaw : 0;   
+    const qtyTxt = (tipoVenta === "UN")
+     ? `🍋‍🟩 ${round2(qtyNum)} unid`
+     : `🍋‍🟩 ${round2(qtyNum)} lb`;
+
+
+
 
     const cobradoNum = toMoneyNumber(v.montoCobrado ?? v.cobrado ?? v.pagado ?? 0);
 
@@ -1828,12 +1927,14 @@ const arr = (await getVentas()) || [];
       </div>
 
       <div class="muted">${escapeHtml(clienteTxt || "Cliente")}</div>
-      <div class="muted">${escapeHtml(qtyTxt)}</div>
+      <div class="muted limonVerde">${escapeHtml(qtyTxt)}</div>
 
       <div class="muted">
         ${escapeHtml(estadoTxt)}${fotoTag}
         &nbsp;|&nbsp; Balance: ${escapeHtml(balanceTxt)}
       </div>
+
+      ${v.foto ? `<img src="${escapeHtml(v.foto)}" alt="foto" style="max-width:180px; border-radius:10px; margin-top:8px; display:block;">` : ""}
     `;
 
     const delBtn = li.querySelector(".btnDelete");
@@ -1857,9 +1958,30 @@ function beginEditVenta(v) {
   const totalEl  = document.getElementById("ventaTotal");
   const estadoEl = document.getElementById("ventaEstado");
   const cobEl    = document.getElementById("ventaCobrado");
+    const metodoEl = document.getElementById("ventaMetodo");
+    if (metodoEl) {
+      const metodo = String(
+        v.metodoCobro || v.metodoPago || v.metodo || ""
+      ).trim();
+      if (metodo) metodoEl.value = metodo;
+    }
   const balEl    = document.getElementById("ventaBalance");
   const notaEl   = document.getElementById("ventaNota");
   const clienteSel = document.getElementById("ventaCliente");
+    if (clienteSel) {
+      const clienteId = String(v.clienteId || "").trim();
+      if (clienteId) clienteSel.value = clienteId;
+
+      // fallback por nombre (por si el select usa IDs distintos)
+      if (!clienteSel.value) {
+        const clienteNombre = String(v.clienteNombre || v.clienteTxt || "").trim();
+        if (clienteNombre) {
+          const opt = Array.from(clienteSel.options)
+            .find(o => (o.textContent || "").trim() === clienteNombre);
+          if (opt) clienteSel.value = opt.value;
+        }
+      }
+    }
   const tipoEl = document.getElementById("ventaTipo");
   const rowLbs = document.getElementById("ventaRowLbs");
   const rowUn  = document.getElementById("ventaRowUn");
@@ -1887,6 +2009,13 @@ function beginEditVenta(v) {
 
   if (notaEl) notaEl.value = v.nota || "";
 
+  // foto preview (no podemos setear el input file, pero sí mostrar la imagen existente)
+  const prevImg = document.getElementById("ventaFotoPreview");
+  if (prevImg) {
+    if (v.foto) { prevImg.src = v.foto; prevImg.style.display = "block"; }
+    else { prevImg.src = ""; prevImg.style.display = "none"; }
+  }
+
   // cliente: si guardas clienteNombre, intenta matchear con el select
   if (clienteSel) {
     const nombre = (v.cliente || v.clienteNombre || "").trim();
@@ -1904,6 +2033,23 @@ function beginEditVenta(v) {
 
   // te lleva al form
   document.getElementById("ventaForm")?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  setTimeout(() => {
+  const clienteSel = document.getElementById("ventaCliente");
+  if (clienteSel) {
+    const clienteId = String(v.clienteId || v.cliente || "").trim();
+    if (clienteId) clienteSel.value = clienteId;
+  }
+
+  const metodoEl = document.getElementById("ventaMetodo");
+  if (metodoEl) {
+    const metodo = String(
+      v.metodoCobro || v.metodoPago || v.metodo || ""
+    ).trim();
+    if (metodo) metodoEl.value = metodo;
+  }
+  });
+
 }
 
 function setAppDefaultDate() {
@@ -2021,8 +2167,8 @@ async function saveAplicacion(e) {
   setAppDefaultDate();
 
   await renderAplicaciones();
-  await renderGastos();
-  await renderDashboard();
+  await renderGastos({ force: true });
+  await renderDashboard({ force: true });
 }
 
 function beginEditAplicacion(a) {
@@ -2119,11 +2265,11 @@ async function renderAplicaciones() {
 
 
 // ---------- DASHBOARD (incluye categorías + mensual) ----------
-async function renderDashboard() {
+async function renderDashboard(opts = {}) {
   const mes = document.getElementById("dashMes")?.value;
   if (!mes) return;
 
-  await warmCache();
+  await warmCache(opts);
   const ventas = CACHE.ventas;
   const gastos = CACHE.gastos;
   const produccion = CACHE.produccion;
@@ -2249,14 +2395,14 @@ function renderGastosPorCategoria(catMap) {
 
  
 async function renderMensualTable(ventas, gastos, produccion) {
-  const tbody = document.getElementById("mensualTable");
+  const tbody = document.getElementById("mensualBody");
   if (!tbody) return;
 
   const rows = buildMonthlyPro(ventas || [], gastos || [], produccion || [], 12);
 
   tbody.innerHTML = rows.map(r => `
     <tr>
-      <td>${r.mes}</td>
+      <td>${escapeHtml(formatMesES(r.mes))}</td>
       <td style="text-align:right;">$${r.ventas.toFixed(2)}</td>
       <td style="text-align:right;">-$${r.gastos.toFixed(2)}</td>
       <td style="text-align:right;">$${r.neto.toFixed(2)}</td>
