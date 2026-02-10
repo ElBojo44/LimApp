@@ -16,34 +16,109 @@ function resetSelectToDefault(selectId) {
 
 async function deleteItem(tipo, id) {
   if (!id) return;
+
   const ok = confirm("¿Seguro que quieres borrar este registro? Esta acción no se puede deshacer.");
   if (!ok) return;
 
-  // Llama tu API (igual que update/add) pero con action delete
-  const res = await apiPost({ type: tipo, action: "delete", id });
-
-  if (!res?.ok) {
-    alert("No se pudo borrar. " + (res?.error || ""));
+  // 1) BORRAR (si esto falla, sí mostramos error)
+  try {
+    const res = await apiPost({ type: tipo, action: "delete", id });
+    if (!res?.ok) {
+      alert("❌ No se pudo borrar. " + (res?.error || ""));
+      return;
+    }
+  } catch (err) {
+    console.error("DELETE failed:", err);
+    alert("❌ No se pudo borrar el registro.");
     return;
   }
 
-  // Limpia del cache local para que desaparezca de una vez
-  if (window.CACHE && Array.isArray(CACHE[tipo])) {
-    CACHE[tipo] = CACHE[tipo].filter(x => String(x.id) !== String(id));
-  }
+  // 2) UI/Cache refresh (si esto falla, NO decimos que no borró)
+  try {
+    // invalida cache del GET del storage.js
+    try { invalidateGetCache(tipo); } catch (e) {}
 
-  // Re-render rápido según módulo
-  if (tipo === "gastos") renderGastos(CACHE.gastos || []);
-  if (tipo === "ventas") renderVentas(CACHE.ventas || []);
-  if (tipo === "produccion") renderProduccion(CACHE.produccion || []);
-  if (tipo === "manoobra") await renderManoObraSimple();
-if (tipo === "aplicaciones") renderAplicaciones(CACHE.aplicaciones || []);
+    // invalida cache nivel app.js
+    try { if (CACHE) { CACHE[tipo] = null; CACHE.loadedAt = 0; } } catch (e) {}
 
-  // Si estás en Mensual, refresca KPIs
-  if (document.getElementById("viewMensual")?.classList.contains("activeView")) {
-    renderDashboard();
+    // re-render según tipo
+    if (tipo === "ventas") await renderVentas({ force: true });
+    if (tipo === "gastos") await renderGastos({ force: true });
+    if (tipo === "produccion") await renderProduccion({ force: true });
+    if (tipo === "manoobra") await renderManoObraSimple();
+    if (tipo === "aplicaciones") await renderAplicaciones();
+
+    scheduleDashboard({ force: true });
+  } catch (err) {
+    console.warn("Delete OK, refresh UI failed:", err);
+    // No alert aquí — porque ya borró.
   }
 }
+
+
+
+  // ===============================
+// "Ver más" (paginación local)
+// ===============================
+const LIST_LIMITS = {
+  ventas: 10,
+  gastos: 10,
+  produccion: 10,
+  manoobra: 10,
+  aplicaciones: 10,
+};
+
+function resetLimit(tipo, n = 10) {
+  if (LIST_LIMITS[tipo] == null) return;
+  LIST_LIMITS[tipo] = n;
+}
+
+function ensureLoadMoreBtn(listEl, tipo, renderFn, step = 10) {
+  if (!listEl) return;
+
+  const btnId = `${tipo}LoadMoreBtn`;
+  let btn = document.getElementById(btnId);
+
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = btnId;
+    btn.type = "button";
+    btn.className = "btnSecondary";
+    btn.style.marginTop = "10px";
+    btn.style.width = "100%";
+    btn.style.padding = "10px";
+    btn.style.borderRadius = "12px";
+    btn.style.cursor = "pointer";
+
+    listEl.insertAdjacentElement("afterend", btn);
+
+    btn.addEventListener("click", async () => {
+      LIST_LIMITS[tipo] = (LIST_LIMITS[tipo] || 10) + step;
+      await renderFn();
+      btn.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }
+
+  return btn;
+}
+
+function updateLoadMoreBtn(btn, shown, total, step = 10) {
+  if (!btn) return;
+
+  // si ya se mostró todo, oculta el botón
+  if (total <= shown) {
+    btn.style.display = "none";
+    return;
+  }
+
+  btn.style.display = "block";
+  const remaining = total - shown;
+  const next = Math.min(step, remaining);
+
+  btn.textContent = `Ver ${next} más (mostrando ${shown} de ${total})`;
+}
+
+
 
 
 function ensureCancelBtn(formId, onCancel) {
@@ -263,35 +338,6 @@ async function refreshCache(type, opts = {}) {
 }
 
 
-async function warmCache(opts = {}) {
-  const force = !!opts.force;
-  // si ya está, no vuelve a pedir (a menos que force)
-  if (!force && CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
-
-  const [v, g, p] = await Promise.all([
-    getVentas(opts),
-    getGastos(opts),
-    getProduccion(opts),
-  ]);
-
-  CACHE.ventas = v || [];
-  CACHE.gastos = g || [];
-  CACHE.produccion = p || [];
-  CACHE.loadedAt = Date.now();
-
-  return CACHE;
-}
-
-// Para cuando guardas algo y quieres refrescar SOLO un tipo
-async function refreshCache(type) {
-  if (type === "ventas") CACHE.ventas = await getVentas();
-  if (type === "gastos") CACHE.gastos = await getGastos();
-  if (type === "produccion") CACHE.produccion = await getProduccion();
-  CACHE.loadedAt = Date.now();
-}
-
-
-
 // ===============================
 // 🍋 App Limones - app.js (LIMPIO)
 // Tabs + Ventas + Gastos + Dashboard + Catálogos + Producción
@@ -428,7 +474,22 @@ function setProdDefaultDate() {
   el.value = todayISO();
 }
 
+function exitEditProduccion() {
+  // salir de modo edición
+  exitEditProduccion();
+}
+
+
+
+
+let PROD_HOOKED = false;
+let _prodEmpSelectPendiente = null;
+
+
 function hookProduccion() {
+  if (PROD_HOOKED) return;
+  PROD_HOOKED = true;
+  
   setProdDefaultDate();
 
   // 1 fila por defecto
@@ -543,25 +604,12 @@ function hookProduccion() {
   prodFormEl?.addEventListener("submit", saveProduccion);
 
   ensureCancelBtn("prodForm", () => {
-    EDIT = { tipo: null, id: null };
-
-    const submitBtn = document.querySelector("#prodForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar producción";
-
-    document.querySelector("#prodForm .btnCancelEdit").style.display = "none";
-
-    document.getElementById("prodForm").reset();
-
-    // reset empleados
-    const cont = document.getElementById("prodEmps");
-    if (cont) cont.innerHTML = "";
-    addProdEmpRow();
-
-    setProdDefaultDate();
+    exitEditProduccion();
   });
 
 }
 
+  
 
 function fillEmpleadoSelectEl(sel) {
   if (!sel) return;
@@ -591,8 +639,6 @@ function addProdEmpRow(preselectId = "") {
   rm?.addEventListener("click", () => row?.remove());
   wrap.appendChild(node);
 }
-
-let _prodEmpSelectPendiente = null;
 
 
 // ===============================
@@ -672,41 +718,50 @@ async function compressImageFile(file, opts = {}) {
 }
 
 
-function ensureCancelBtnGasto() {
-  const form = document.getElementById("gastoForm");
-  if (!form) return;
-
-  let btn = form.querySelector(".btnCancelEdit");
-  if (btn) return;
-
-  btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btnCancelEdit";
-  btn.textContent = "Cancelar edición";
-  btn.style.marginLeft = "10px";
-  btn.style.display = "none";
-
-  btn.addEventListener("click", () => {
-    EDIT = { tipo: null, id: null };
-
-    const submitBtn = document.querySelector("#gastoForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar gasto";
-
-    btn.style.display = "none";
-    form.reset();
-    setGastoDefaultDate();
-
-    // opcional: colapsar mini-boxes si estaban abiertos
-    document.getElementById("gastoNewCatBox") && (document.getElementById("gastoNewCatBox").style.display = "none");
-    document.getElementById("gastoNewEmpBox") && (document.getElementById("gastoNewEmpBox").style.display = "none");
-  });
-
-  form.appendChild(btn);
-}
-ensureCancelBtnGasto();
+let GASTOS_HOOKED = false;
 
 function hookGastos() {
+  if (GASTOS_HOOKED) return;
+  GASTOS_HOOKED = true;
+  
   setGastoDefaultDate();
+  
+
+
+  function ensureCancelBtnGasto() {
+    const form = document.getElementById("gastoForm");
+    if (!form) return;
+
+    let btn = form.querySelector(".btnCancelEdit");
+    if (btn) return;
+
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btnCancelEdit";
+    btn.textContent = "Cancelar edición";
+    btn.style.marginLeft = "10px";
+    btn.style.display = "none";
+
+    btn.addEventListener("click", () => {
+      EDIT = { tipo: null, id: null };
+
+      const submitBtn = document.querySelector("#gastoForm button[type='submit']");
+      if (submitBtn) submitBtn.textContent = "Guardar gasto";
+
+      btn.style.display = "none";
+      form.reset();
+      setGastoDefaultDate();
+
+      document.getElementById("gastoNewCatBox") && (document.getElementById("gastoNewCatBox").style.display = "none");
+      document.getElementById("gastoNewEmpBox") && (document.getElementById("gastoNewEmpBox").style.display = "none");
+    });
+
+    form.appendChild(btn);
+  }
+
+  ensureCancelBtnGasto();
+
+
 
   // Categoría: mostrar mini form si elige "➕ Nuevo…"
   const catSel = document.getElementById("gastoCategoria");
@@ -926,8 +981,8 @@ async function renderGastos(opts = {}) {
   const items = (CACHE.gastos || []);
 
   list.innerHTML = "";
-
-  items.slice(0, 30).forEach(g => {
+  const limit = LIST_LIMITS.gastos || 10;
+  items.slice(0, limit).forEach(g => {
     const li = document.createElement("li");
 
     // ✅ usa el mismo estilo “card” que Ventas / Producción
@@ -966,13 +1021,22 @@ async function renderGastos(opts = {}) {
     `;
 
     const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("gastos", g.id); });
+    delBtn?.addEventListener("click", async (ev) => {
+  ev.stopPropagation();
+  await deleteItem("gastos", g.id);
+});
+
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
     li.addEventListener("click", () => beginEditGasto(g));
-list.appendChild(li);
+    list.appendChild(li);
   });
+
+    const btn = ensureLoadMoreBtn(list, "gastos", () => renderGastos(opts), 10);
+    updateLoadMoreBtn(btn, Math.min(limit, items.length), items.length, 10);
+
+
 }
 
 
@@ -1148,37 +1212,28 @@ async function saveProduccion(e) {
     return;
   }
 
-  // ✅ EDIT vs ADD
-  if (EDIT?.tipo === "prod" && EDIT?.id) {
-    if (typeof updateProduccion === "function") {
-      await updateProduccion(EDIT.id, { ...data, id: EDIT.id });
-    } else {
-      alert("Falta updateProduccion() en storage.js. Dime y lo agregamos.");
-      return;
-    }
-
-    // salir de modo edición
-    EDIT = { tipo: null, id: null };
-    const sb = document.querySelector("#prodForm button[type='submit']");
-    if (sb) sb.textContent = "Guardar producción";
-    const cb = document.querySelector("#prodForm .btnCancelEdit");
-    if (cb) cb.style.display = "none";
-
-    alert("✅ Producción actualizada");
+// ✅ EDIT vs ADD
+if (EDIT?.tipo === "prod" && EDIT?.id) {
+  if (typeof updateProduccion === "function") {
+    await updateProduccion(EDIT.id, { ...data, id: EDIT.id });
   } else {
-    await addProduccion(data);
-    alert("✅ Producción guardada");
+    alert("Falta updateProduccion() en storage.js. Dime y lo agregamos.");
+    return;
   }
 
-  // reset
-  document.getElementById("prodForm")?.reset();
-  document.getElementById("prodEmps") && (document.getElementById("prodEmps").innerHTML = "");
-  addProdEmpRow();
-  setProdDefaultDate();
-
-  await renderProduccion();
-  await renderDashboard();
+  exitEditProduccion();
+  alert("✅ Producción actualizada");
+} else {
+  await addProduccion(data);
+  alert("✅ Producción guardada");
 }
+
+// refrescar UI
+await refreshCache("produccion");
+await renderProduccion();
+scheduleDashboard();
+}
+
 
 function beginEditProduccion(p) {
   EDIT = { tipo: "prod", id: p.id };
@@ -1248,7 +1303,8 @@ async function renderProduccion() {
   }
 
   ul.innerHTML = "";
-  arr.slice(0, 10).forEach(p => {
+  const limit = LIST_LIMITS.produccion || 10;
+  arr.slice(0, limit).forEach(p => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
@@ -1270,7 +1326,11 @@ async function renderProduccion() {
       ${p.nota ? `<div class="muted">${escapeHtml(p.nota)}</div>` : ""}
     `;
     const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("produccion", p.id); });
+    delBtn?.addEventListener("click", async (ev) => {
+  ev.stopPropagation();
+  await deleteItem("produccion", p.id);
+});
+
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
@@ -1280,25 +1340,41 @@ async function renderProduccion() {
     // (Edición de producción la arreglamos después)
     ul.appendChild(li);
   });
+
+  const btn = ensureLoadMoreBtn(ul, "produccion", renderProduccion, 10);
+  updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
+
+}
+
+let MO_HOOKED = false;
+
+function exitEditManoObra() {
+  EDIT = { tipo: null, id: null };
+
+  const sb = document.querySelector("#moForm button[type='submit']");
+  if (sb) sb.textContent = "Guardar mano de obra";
+
+  const cb = document.querySelector("#moForm .btnCancelEdit");
+  if (cb) cb.style.display = "none";
+
+  const form = document.getElementById("moForm");
+  form?.reset();
+
+  const f = document.getElementById("moFecha");
+  if (f) f.value = todayISO();
 }
 
 
 function hookManoObraSimple() {
+  if (MO_HOOKED) return;
+  MO_HOOKED = true;
+
   const form = document.getElementById("moForm");
   if (!form) return;
 
-  ensureCancelBtn("moForm", () => {
-    EDIT = { tipo: null, id: null };
-
-    const submitBtn = document.querySelector("#moForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
-
-    document.querySelector("#moForm .btnCancelEdit").style.display = "none";
-
-    document.getElementById("moForm").reset();
-    document.getElementById("moFecha").value = todayISO();
-  });
-
+ ensureCancelBtn("moForm", () => {
+  exitEditManoObra();
+});
 
   const f = document.getElementById("moFecha");
   if (f && !f.value) f.value = todayISO();
@@ -1458,20 +1534,11 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
       nota,
     };
 
-    if (EDIT?.tipo === "mo" && EDIT?.id) {
-      // EDITAR
-      if (typeof updateManoObra !== "function") {
-        alert("Falta updateManoObra() en storage.js.");
-        return;
-      }
+    if (EDIT?.tipo === "mo" && EDIT?.id) {     
 
       await updateManoObra(EDIT.id, payload);
 
-      EDIT = { tipo: null, id: null };
-      const submitBtn = document.querySelector("#moForm button[type='submit']");
-      if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
-      const cancelBtn = document.querySelector("#moForm .btnCancelEdit");
-      if (cancelBtn) cancelBtn.style.display = "none";
+      exitEditManoObra();
 
       alert("✅ Mano de obra actualizada");
     } else {
@@ -1486,29 +1553,49 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
       const empNombre = (emp && emp.nombre) ? emp.nombre : "";
       const tareaNombre = (task && task.nombre) ? task.nombre : "";
 
-      await addGasto({
-        id: makeId(),
-        fecha,
-        monto: totalMO,
-        categoriaId: "",
-        categoriaNombre: "Mano de obra",
-        categoria: "Mano de obra",
-        nota: `${empNombre} — ${tareaNombre} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${nota ? " • " + nota : ""}`,
-        createdAt: Date.now()
-      });
-
-      alert("✅ Mano de obra guardada");
-    }
-
-    // refrescar listas
-    await renderGastos();
-    await renderDashboard();
-
-    form.reset();
-    const moFechaEl = document.getElementById("moFecha");
-    if (moFechaEl) moFechaEl.value = todayISO();
-    await renderManoObraSimple();
+      // ⚠️ Solo en “nuevo” creamos el gasto automático (para no duplicar al editar)
+let gastoOk = true;
+try {
+  await addGasto({
+    id: makeId(),
+    fecha,
+    monto: totalMO,
+    categoriaId: "",                  // si luego quieres, lo mapeamos a una cat real
+    categoriaNombre: "Mano de obra",
+    categoria: "Mano de obra",
+    metodoPago: "EFECTIVO",           // ✅ IMPORTANTE: muchas hojas/validaciones esperan algo aquí
+    proveedor: "",
+    empleadoId: emp.id || "",
+    empleadoNombre: emp.nombre || "",
+    nota: `${empNombre} — ${tareaNombre} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${nota ? " • " + nota : ""}`,
+    createdAt: Date.now()
   });
+} catch (err) {
+  gastoOk = false;
+  console.error("No se pudo crear gasto automático:", err);
+}
+  
+
+if (!gastoOk) {
+  alert("⚠️ Mano de obra se guardó, pero el gasto automático falló.");
+}
+
+
+alert("✅ Mano de obra guardada");
+    
+}
+
+// refrescar listas
+await renderGastos();
+scheduleDashboard();
+
+
+form.reset();
+const mf = document.getElementById("moFecha");
+if (mf) mf.value = todayISO();
+
+await renderManoObraSimple();
+});
 
 }
 
@@ -1526,7 +1613,8 @@ async function renderManoObraSimple() {
   }
 
   ul.innerHTML = "";
-  arr.slice(0, 10).forEach(m => {
+  const limit = LIST_LIMITS.manoobra || 10;
+  arr.slice(0, limit).forEach(m => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
@@ -1543,7 +1631,11 @@ async function renderManoObraSimple() {
     `;
 
     const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("manoobra", m.id); });
+    delBtn?.addEventListener("click", async (ev) => {
+  ev.stopPropagation();
+  await deleteItem("manoobra", m.id);
+});
+
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
@@ -1551,37 +1643,13 @@ async function renderManoObraSimple() {
 
     ul.appendChild(li);
   });
+
+  const btn = ensureLoadMoreBtn(ul, "manoobra", renderManoObraSimple, 10);
+  updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
+
 }
 
 
-function ensureCancelBtnMO() {
-  const form = document.getElementById("moForm");
-  if (!form) return;
-
-  let btn = form.querySelector(".btnCancelEdit");
-  if (btn) return;
-
-  btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btnCancelEdit";
-  btn.textContent = "Cancelar edición";
-  btn.style.marginLeft = "10px";
-  btn.style.display = "none";
-
-  btn.addEventListener("click", () => {
-    EDIT = { tipo: null, id: null };
-
-    const submitBtn = document.querySelector("#moForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar mano de obra";
-
-    btn.style.display = "none";
-    form.reset();
-    const f = document.getElementById("moFecha");
-    if (f) f.value = todayISO();
-  });
-
-  form.appendChild(btn);
-}
 
 function beginEditManoObra(m) {
   EDIT = { tipo: "mo", id: m.id };
@@ -1915,8 +1983,8 @@ async function renderVentas(opts = {}) {
 
   list.innerHTML = "";
   const frag = document.createDocumentFragment();
-
-  arr.slice(0, 10).forEach(v => {
+  const limit = LIST_LIMITS.ventas || 10;
+  arr.slice(0, limit).forEach(v => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
@@ -1970,6 +2038,10 @@ async function renderVentas(opts = {}) {
   });
 
   list.appendChild(frag);
+
+  const btn = ensureLoadMoreBtn(list, "ventas", renderVentas, 10);
+  updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
+
 }
 
 
@@ -2245,7 +2317,8 @@ async function renderAplicaciones() {
   }
 
   ul.innerHTML = "";
-  arr.slice(0, 15).forEach(a => {
+  const limit = LIST_LIMITS.aplicaciones || 10;
+  arr.slice(0, limit).forEach(a => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
@@ -2276,7 +2349,11 @@ async function renderAplicaciones() {
     `;
 
     const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteItem("aplicaciones", a.id); });
+    delBtn?.addEventListener("click", async (ev) => {
+  ev.stopPropagation();
+  await deleteItem("aplicaciones", g.id);
+});
+
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
@@ -2284,8 +2361,19 @@ async function renderAplicaciones() {
 
     ul.appendChild(li);
   });
+
+  const btn = ensureLoadMoreBtn(ul, "aplicaciones", renderAplicaciones, 10);
+  updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
+
 }
 
+let _dashTimer = null;
+function scheduleDashboard(opts = {}) {
+  clearTimeout(_dashTimer);
+  _dashTimer = setTimeout(() => {
+    renderDashboard(opts).catch(console.error);
+  }, 120); // 120ms: agrupa renders seguidos (guardar + render lista + etc.)
+}
 
 
 
@@ -2380,14 +2468,6 @@ gastos.forEach(g => {
   if (k === "mano de obra" || k === "manoobra") tMO += monto;
   if (k === "aplicaciones" || k === "aplicacion" || k === "aplicaciones ") tApps += monto;
 });
-
-let _dashTimer = null;
-function scheduleDashboard(opts = {}) {
-  clearTimeout(_dashTimer);
-  _dashTimer = setTimeout(() => {
-    renderDashboard(opts).catch(console.error);
-  }, 120); // 120ms: agrupa renders seguidos (guardar + render lista + etc.)
-}
 
 
 renderGastosPorCategoria(catMap);
@@ -2513,13 +2593,4 @@ function normalizeISODate(s) {
   if (ym) return "";   // <- en vez de inventar día 01
 
   return "";
-}
-
-async function updateAplicacion(id, patch) {
-  return apiPostBody({
-    type: "aplicaciones",
-    action: "update",
-    id,
-    data: { id, ...(patch || {}) },
-  });
 }

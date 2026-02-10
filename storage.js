@@ -76,7 +76,11 @@ async function apiPostBody(bodyObj) {
   }
 
   if (!res.ok) throw new Error(json?.error || `POST failed: ${res.status}`);
-  if (!json.ok) throw new Error(json.error || "POST error");
+  if (!json.ok) {
+  console.error("POST response:", json);
+  throw new Error(json.error || "POST error");
+}
+
   // Invalidate GET cache for this type so next UI refresh is instant + correct
   try { invalidateGetCache(bodyObj?.type); } catch {}
   return json;
@@ -307,6 +311,22 @@ async function addGastoLocal(g) {
   _writeArr(KEY_GASTOS_LOCAL, arr);
   return g;
 }
+
+// ===============================
+// DELETE (Sheets)
+// ===============================
+async function deleteItemById(type, id) {
+  if (!type || !id) {
+    throw new Error("deleteItemById requiere type e id");
+  }
+
+  return apiPostBody({
+    type,
+    action: "delete",
+    id
+  });
+}
+
 
 // ===============================
 // UPDATE (Sheets)
