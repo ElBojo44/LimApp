@@ -220,6 +220,7 @@
                 Empleado
                 <select id="gastoEmpleado">
                   <option value="">Selecciona…</option>
+                  <option value="__NEW__">+ Nuevo…</option>
                 </select>
             </label>
           </div>
@@ -283,7 +284,8 @@
                     Zona
                     <select id="prodZona" required>
                       <option value="">Selecciona…</option>
-                    </select>                  
+                      <option value="__NEW__">+ Nuevo…</option>
+                    </select>                 
                 </label>
             </div>
 
@@ -369,6 +371,7 @@
         Empleado
           <select id="moEmpleado" required>
             <option value="">Selecciona…</option>
+            <option value="__NEW__">+ Nuevo…</option>
           </select>
       </label>
     </div>
@@ -378,6 +381,7 @@
         Tarea
         <select id="moTarea" required>
           <option value="">Selecciona…</option>
+          <option value="__NEW__">+ Nuevo…</option>
         </select>
       </label>
 
@@ -420,8 +424,17 @@
     <!--      APLICACIONES        -->
     <!-- ======================= -->
     <section id="viewAplicaciones" class="view">
-  <section class="card">
+    <section class="card">
     <h2>🧪 Registrar aplicación</h2>
+
+    <!-- mini form: nueva zona (oculto) -->
+    <div id="appNewZonaBox" class="miniForm" style="display:none; margin-bottom:12px;">
+      <div class="miniTitle">➕ Nueva zona</div>
+      <input id="appNewZonaNombre" type="text" placeholder="Nombre (Ej: Zona 4 / Loma arriba)" />
+      <input id="appNewZonaDesc" type="text" placeholder="Descripción (opcional)" />
+      <button type="button" id="appSaveNewZona">Guardar zona</button>
+    </div>
+
 
     <form id="appForm" autocomplete="off">
       <div class="row">
@@ -610,7 +623,7 @@
 </section>
 
       
- 
+</main>
 
   <!-- Orden correcto -->
   <script src="storage.js"></script>

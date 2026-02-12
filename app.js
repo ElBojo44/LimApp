@@ -235,8 +235,9 @@ function normCatName(v) {
   return String(v || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function buildMonthlyPro(ventas = [], gastos = [], produccion = [], n = 12) {
+function buildMonthlyPro(ventas = [], gastos = [], produccion = [], aplicaciones = [], n = 12) {
   const months = {};
+
   // base months list (last N)
   lastNMonthsKeys(n).forEach(k => months[k] = {
     mes: k,
@@ -250,24 +251,30 @@ function buildMonthlyPro(ventas = [], gastos = [], produccion = [], n = 12) {
     apps: 0
   });
 
-  ventas.forEach(v => {
+  // Ventas
+  (ventas || []).forEach(v => {
     const mk = monthKeyFromAnyDate(v.fecha);
     if (!months[mk]) return;
     months[mk].ventas += Number(v.total) || 0;
     months[mk].libras += Number(v.libras) || 0;
   });
 
-  gastos.forEach(g => {
+  // Gastos (NO apps aquí; solo mano de obra)
+  (gastos || []).forEach(g => {
     const mk = monthKeyFromAnyDate(g.fecha);
     if (!months[mk]) return;
+
     const monto = Number(g.monto) || 0;
     months[mk].gastos += monto;
 
     const cat = normCatName(g.categoriaNombre || g.categoria);
     if (cat === "mano de obra" || cat === "manoobra") months[mk].manoobra += monto;
-    if (cat === "aplicaciones" || cat === "aplicacion") months[mk].apps += monto;
+
+    // ❌ OJO: NO sumar aplicaciones desde gastos
+    // if (cat === "aplicaciones" || cat === "aplicacion") months[mk].apps += monto;
   });
 
+  // Producción
   (produccion || []).forEach(p => {
     const mk = monthKeyFromAnyDate(p.fecha);
     if (!months[mk]) return;
@@ -275,7 +282,14 @@ function buildMonthlyPro(ventas = [], gastos = [], produccion = [], n = 12) {
     months[mk].prodCajas += Number(p.cajas) || 0;
   });
 
-  const arr = Object.values(months).sort((a,b) => (a.mes < b.mes ? 1 : -1));
+  // ✅ Aplicaciones (desde tabla aplicaciones)
+  (aplicaciones || []).forEach(a => {
+    const mk = monthKeyFromAnyDate(a.fecha);
+    if (!months[mk]) return;
+    months[mk].apps += Number(a.costo) || 0;
+  });
+
+  const arr = Object.values(months).sort((a, b) => (a.mes < b.mes ? 1 : -1));
   arr.forEach(r => {
     r.neto = r.ventas - r.gastos;
     r.costoLb = r.libras ? (r.gastos / r.libras) : 0;
@@ -283,6 +297,7 @@ function buildMonthlyPro(ventas = [], gastos = [], produccion = [], n = 12) {
     r.moLb = r.libras ? (r.manoobra / r.libras) : 0;
     r.appsLb = r.libras ? (r.apps / r.libras) : 0;
   });
+
   return arr;
 }
 
@@ -312,21 +327,26 @@ async function warmCache(opts = {}) {
   const force = !!opts.force;
 
   // si está fresco, no vuelvas a pegar al backend
-  if (!force && cacheIsFresh() && CACHE.ventas && CACHE.gastos && CACHE.produccion) return CACHE;
+  if (!force && cacheIsFresh() && CACHE.ventas && CACHE.gastos && CACHE.produccion && CACHE.aplicaciones) {
+    return CACHE;
+  }
 
-  const [v, g, p] = await Promise.all([
-    getVentas({ force }),       // si tu storage ignora force, no pasa nada
+  const [v, g, p, a] = await Promise.all([
+    getVentas({ force }),
     getGastos({ force }),
     getProduccion({ force }),
+    getAplicaciones ? getAplicaciones({ force }) : Promise.resolve([]),
   ]);
 
   CACHE.ventas = v || [];
   CACHE.gastos = g || [];
   CACHE.produccion = p || [];
+  CACHE.aplicaciones = a || [];
   CACHE.loadedAt = Date.now();
 
   return CACHE;
 }
+
 
 // refresca SOLO un tipo (y deja lo demás intacto)
 async function refreshCache(type, opts = {}) {
@@ -334,10 +354,12 @@ async function refreshCache(type, opts = {}) {
   if (type === "ventas") CACHE.ventas = await getVentas({ force });
   if (type === "gastos") CACHE.gastos = await getGastos({ force });
   if (type === "produccion") CACHE.produccion = await getProduccion({ force });
+  if (type === "aplicaciones") CACHE.aplicaciones = await (getAplicaciones ? getAplicaciones({ force }) : []);
   CACHE.loadedAt = Date.now();
 }
 
 
+  
 // ===============================
 // 🍋 App Limones - app.js (LIMPIO)
 // Tabs + Ventas + Gastos + Dashboard + Catálogos + Producción
@@ -475,12 +497,17 @@ function setProdDefaultDate() {
 }
 
 function exitEditProduccion() {
-  // salir de modo edición
-  exitEditProduccion();
+  EDIT = { tipo: null, id: null };
+
+  const sb = document.querySelector("#prodForm button[type='submit']");
+  if (sb) sb.textContent = "Guardar producción";
+
+  const cb = document.querySelector("#prodForm .btnCancelEdit");
+  if (cb) cb.style.display = "none";
+
+  document.getElementById("prodForm")?.reset();
+  setProdDefaultDate();
 }
-
-
-
 
 let PROD_HOOKED = false;
 let _prodEmpSelectPendiente = null;
@@ -989,36 +1016,41 @@ async function renderGastos(opts = {}) {
     li.className = "ventaItem manoItem";
 
     const montoTxt = moneyRD(g.monto || 0);
-    const fechaTxt = formatFechaES(g.fecha || g.createdAt);
-
+    const fechaTxt = formatFechaES(g.fecha || g.createdAt);    
     const catTxt = (g.categoriaNombre || g.categoria || "Sin categoría").trim();
     const metodoTxt = (g.metodoPago || "").trim();
     const provTxt = (g.proveedor || "").trim();
     const empTxt = (g.empleadoNombre || "").trim();
 
-    // Línea 1 abajo: categoría + método (+ proveedor opcional)
-    const linea1 = [
-      catTxt,
-      metodoTxt,
-      provTxt ? provTxt : ""
-    ].filter(Boolean).join(" • ");
+    
 
     // Línea 2 abajo: empleado opcional (como “Alberto — Tarea 5 • 8h” si lo tienes en nota)
-    const linea2 = empTxt ? empTxt : "";
+    
+
+    const catLower = String(catTxt || "").trim().toLowerCase();
+    const isMO = (catLower === "mano de obra" || catLower === "manoobra");
+
+    const linea2 = [catTxt, metodoTxt].filter(Boolean).join(" • ");
+
+    const linea3Parts = [];
+    if (provTxt) linea3Parts.push(provTxt);
+    if (empTxt) linea3Parts.push(`👷 ${empTxt}`);
+    const linea3 = linea3Parts.join(" • ");
 
     li.innerHTML = `
       <div class="itemTop">
-        <strong>${escapeHtml(montoTxt)}</strong>
+        <strong>💰 ${escapeHtml(montoTxt)}</strong>
         <span class="muted">${escapeHtml(fechaTxt)}</span>
         <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
 
-      <div class="muted">${escapeHtml(linea1)}</div>
-      ${linea2 ? `<div class=\"muted\">👷 ${escapeHtml(linea2)}</div>` : ""}
+      <div class="muted">${escapeHtml(linea2)}</div>
 
-      ${g.nota ? `<div class="muted">${escapeHtml(g.nota)}</div>` : ""}
-      ${g.reciboFoto ? `<img src="${g.reciboFoto}" alt="recibo" style="max-width:180px; border-radius:10px; margin-top:8px; display:block;">` : ""}
+      ${linea3 ? `<div class="muted">${escapeHtml(linea3)}</div>` : ""}
+
+      ${(!isMO && g.nota) ? `<div class="ventaNota">${escapeHtml(g.nota)}</div>` : ""}
     `;
+      
 
     const delBtn = li.querySelector(".btnDelete");
     delBtn?.addEventListener("click", async (ev) => {
@@ -1072,7 +1104,7 @@ fillSelect("gastoCategoria", GASTO_CATS, true, true);
 fillSelect("gastoEmpleado", EMPLEADOS, true, true);
 
   fillSelect("prodZona", ZONAS, true, true); // 👈 allowNew = true
-  fillSelect("appZona", ZONAS, true);
+  fillSelect("appZona", ZONAS, true, true);
   fillSelect("moEmpleado", EMPLEADOS, true, true);
   fillSelect("moZona", ZONAS, false);
   fillSelect("moTarea", LABORES, true, true);
@@ -1534,67 +1566,51 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
       nota,
     };
 
-    if (EDIT?.tipo === "mo" && EDIT?.id) {     
-
-      await updateManoObra(EDIT.id, payload);
-
-      exitEditManoObra();
-
-      alert("✅ Mano de obra actualizada");
-    } else {
-      // NUEVO
-      await addManoObra({
-        id: makeId(),
-        ...payload,
-        createdAt: Date.now(),
-      });
-
-      // ⚠️ Solo en “nuevo” creamos el gasto automático (para no duplicar al editar)
-      const empNombre = (emp && emp.nombre) ? emp.nombre : "";
-      const tareaNombre = (task && task.nombre) ? task.nombre : "";
-
-      // ⚠️ Solo en “nuevo” creamos el gasto automático (para no duplicar al editar)
-let gastoOk = true;
-try {
-  await addGasto({
+    if (EDIT?.tipo === "mo" && EDIT?.id) {
+  await updateManoObra(EDIT.id, payload);
+  exitEditManoObra();
+  alert("✅ Mano de obra actualizada");
+} else {
+  await addManoObra({
     id: makeId(),
-    fecha,
-    monto: totalMO,
-    categoriaId: "",                  // si luego quieres, lo mapeamos a una cat real
-    categoriaNombre: "Mano de obra",
-    categoria: "Mano de obra",
-    metodoPago: "EFECTIVO",           // ✅ IMPORTANTE: muchas hojas/validaciones esperan algo aquí
-    proveedor: "",
-    empleadoId: emp.id || "",
-    empleadoNombre: emp.nombre || "",
-    nota: `${empNombre} — ${tareaNombre} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${nota ? " • " + nota : ""}`,
-    createdAt: Date.now()
+    ...payload,
+    createdAt: Date.now(),
   });
-} catch (err) {
-  gastoOk = false;
-  console.error("No se pudo crear gasto automático:", err);
+
+  let gastoOk = true;
+  try {
+    await addGasto({
+      id: makeId(),
+      fecha,
+      monto: totalMO,
+      categoriaId: "",
+      categoriaNombre: "Mano de obra",
+      categoria: "Mano de obra",
+      metodoPago: "EFECTIVO",
+      proveedor: "",
+      empleadoId: emp.id || "",
+      empleadoNombre: emp.nombre || "",
+      nota: `${empNombre} — ${tareaNombre} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${nota ? " • " + nota : ""}`,
+      createdAt: Date.now()
+    });
+  } catch (err) {
+    gastoOk = false;
+    console.error("No se pudo crear gasto automático:", err);
+  }
+
+  if (!gastoOk) alert("⚠️ Mano de obra se guardó, pero el gasto automático falló.");
+  alert("✅ Mano de obra guardada");
 }
-  
 
-if (!gastoOk) {
-  alert("⚠️ Mano de obra se guardó, pero el gasto automático falló.");
-}
-
-
-alert("✅ Mano de obra guardada");
-    
-}
-
-// refrescar listas
+// ✅ refrescar SIEMPRE (nuevo y editar)
+await renderManoObraSimple();
 await renderGastos();
-scheduleDashboard();
-
+scheduleDashboard?.();
 
 form.reset();
 const mf = document.getElementById("moFecha");
 if (mf) mf.value = todayISO();
 
-await renderManoObraSimple();
 });
 
 }
@@ -1618,17 +1634,24 @@ async function renderManoObraSimple() {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
-    li.innerHTML = `
-      <div class="itemTop">
-        <strong>${escapeHtml(fmtDate(m.fecha))} — 👷 ${escapeHtml(m.empleadoNombre || "")}</strong>
-        <span class="muted">${moneyRD(toMoneyNumber(m.total ?? (Number(m.horas||0)*Number(m.pagoDia||0))))}</span>
-        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
-      </div>
-      <div class="muted">
-        ${escapeHtml(m.tareaNombre || "")} • ${Number(m.horas || 0).toFixed(2)} d
-        ${m.nota ? `<div class="ventaNota">${escapeHtml(m.nota)}</div>` : ""}
-      </div>
-    `;
+  li.innerHTML = `
+  <div class="itemTop">
+    <strong>👷 ${escapeHtml(m.empleadoNombre || "")} — ${escapeHtml(fmtDate(m.fecha))}</strong>
+    <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
+  </div>
+
+  <div class="muted">
+    💰 ${moneyRD(toMoneyNumber(m.total ?? (Number(m.horas||0)*Number(m.pagoDia||0))))}
+  </div>
+
+  <div class="muted">
+    ${escapeHtml(m.tareaNombre || "")} • ${Number(m.horas || 0).toFixed(2)} d
+  </div>
+
+  ${m.nota ? `<div class="ventaNota">${escapeHtml(m.nota)}</div>` : ""}
+`;
+
+
 
     const delBtn = li.querySelector(".btnDelete");
     delBtn?.addEventListener("click", async (ev) => {
@@ -2155,60 +2178,106 @@ function setAppDefaultDate() {
   if (!el.value) el.value = todayISO();
 }
 
+let APP_HOOKED = false;
+
+function exitEditAplicacion() {
+  EDIT = { tipo: null, id: null };
+
+  const sb = document.querySelector("#appForm button[type='submit']");
+  if (sb) sb.textContent = "Guardar aplicación";
+
+  const cb = document.querySelector("#appForm .btnCancelEdit");
+  if (cb) cb.style.display = "none";
+
+  const form = document.getElementById("appForm");
+  form?.reset();
+
+  const f = document.getElementById("appFecha");
+  if (f) f.value = todayISO();
+}
+
+
 function hookAplicaciones() {
-  setAppDefaultDate();
+  if (APP_HOOKED) return;
+  APP_HOOKED = true;
 
   const form = document.getElementById("appForm");
   if (!form) return;
 
-  // crear botón cancelar edición (reusa el mismo helper que usas en Ventas)
-  ensureCancelBtn("appForm", () => {
-    EDIT = { tipo: null, id: null };
+  // fecha default
+  const f = document.getElementById("appFecha");
+  if (f && !f.value) f.value = todayISO();
 
-    const submitBtn = document.querySelector("#appForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar aplicación";
+  // Cancelar edición (botón)
+  ensureCancelBtn("appForm", () => exitEditAplicacion());
 
-    document.querySelector("#appForm .btnCancelEdit").style.display = "none";
+  // Zona: mostrar mini form si elige "➕ Nuevo…"
+const zonaSel = document.getElementById("appZona");
+zonaSel?.addEventListener("change", () => {
+  const box = document.getElementById("appNewZonaBox");
+  if (!box) return;
 
-    form.reset();
-    setAppDefaultDate();
+  box.style.display = (zonaSel.value === "__NEW__") ? "block" : "none";
+  if (zonaSel.value === "__NEW__") document.getElementById("appNewZonaNombre")?.focus();
+});
+
+// Guardar nueva zona
+document.getElementById("appSaveNewZona")?.addEventListener("click", async () => {
+  const nombreEl = document.getElementById("appNewZonaNombre");
+  const descEl = document.getElementById("appNewZonaDesc");
+
+  const nombre = (nombreEl?.value || "").trim();
+  const desc = (descEl?.value || "").trim();
+  if (!nombre) return alert("Pon el nombre de la zona.");
+
+  await addZona({
+    id: makeId(),
+    nombre,
+    descripcion: desc,
+    activo: "1",
+    createdAt: Date.now()
   });
 
+  await loadCatalogos(); // refresca ZONAS + rellena selects
+
+  // selecciona la nueva zona en appZona
+  const nueva = (ZONAS || []).find(z => String(z.nombre || "").trim().toLowerCase() === nombre.toLowerCase());
+  if (nueva) document.getElementById("appZona").value = nueva.id;
+
+  // cerrar mini-form y limpiar
+  const box = document.getElementById("appNewZonaBox");
+  if (box) box.style.display = "none";
+  if (nombreEl) nombreEl.value = "";
+  if (descEl) descEl.value = "";
+});
+
+  // submit
   form.addEventListener("submit", saveAplicacion);
 }
 
 async function saveAplicacion(e) {
   e.preventDefault();
 
-  const fechaEl = document.getElementById("appFecha");
+  const fecha = normalizeISODate(document.getElementById("appFecha")?.value || "");
   const zonaEl = document.getElementById("appZona");
-  const prodEl = document.getElementById("appProducto");
-  const tipoEl = document.getElementById("appTipo");
-  const dosisEl = document.getElementById("appDosis");
-  const costoEl = document.getElementById("appCosto");
-  const notaEl = document.getElementById("appNota");
-
-  const fechaRaw = String(fechaEl?.value || "");
-  const fecha = fechaRaw.includes("T") ? fechaRaw.slice(0,10) : fechaRaw;
-
   const zonaId = zonaEl?.value || "";
   const zonaNombre = zonaEl?.selectedOptions?.[0]?.textContent || "";
 
-  const producto = (prodEl?.value || "").trim();
-  const tipo = (tipoEl?.value || "").trim();
-  const dosis = (dosisEl?.value || "").trim();
-  const costo = Number(costoEl?.value || 0);
-  const nota = (notaEl?.value || "").trim();
+  const producto = (document.getElementById("appProducto")?.value || "").trim();
+  const tipo = document.getElementById("appTipo")?.value || "";
+  const dosis = (document.getElementById("appDosis")?.value || "").trim();
+  const costo = Number(document.getElementById("appCosto")?.value || 0);
+  const nota = (document.getElementById("appNota")?.value || "").trim();
 
   if (!fecha) return alert("Fecha inválida.");
-  if (!producto) return alert("Producto requerido.");
-  if (!tipo) return alert("Tipo requerido.");
-  if (!isFinite(costo) || costo < 0) return alert("Costo inválido.");
+  if (!producto) return alert("Pon el producto.");
+  if (!tipo) return alert("Selecciona el tipo.");
+  if (!isFinite(costo) || costo < 0) return alert("Costo debe ser >= 0.");
 
   const payload = {
     fecha,
-    zonaId,
-    zonaNombre,
+    zonaId: (zonaId && zonaId !== "__NEW__") ? zonaId : "",
+    zonaNombre: (zonaId && zonaId !== "__NEW__") ? zonaNombre : "",
     producto,
     tipo,
     dosis,
@@ -2217,84 +2286,71 @@ async function saveAplicacion(e) {
   };
 
   if (EDIT?.tipo === "app" && EDIT?.id) {
-    // EDIT
-    if (typeof updateAplicacion !== "function") {
-      alert("Falta updateAplicacion() en storage.js.");
-      return;
-    }
-
     await updateAplicacion(EDIT.id, payload);
-
-    // (por ahora) NO tocamos gastos automáticos al editar, para no duplicar
-    EDIT = { tipo: null, id: null };
-    const submitBtn = document.querySelector("#appForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar aplicación";
-    const cancelBtn = document.querySelector("#appForm .btnCancelEdit");
-    if (cancelBtn) cancelBtn.style.display = "none";
-
+    exitEditAplicacion();
     alert("✅ Aplicación actualizada");
   } else {
-    // ADD
-    const id = makeId();
-
     await addAplicacion({
-      id,
+      id: makeId(),
       ...payload,
       createdAt: Date.now(),
     });
-
-    // gasto automático (opcional pero recomendado)
-    if (payload.costo > 0) {
-      await addGasto({
-        id: makeId(),
-        fecha,
-        monto: payload.costo,
-        categoriaId: "",
-        categoriaNombre: "Aplicaciones",
-        categoria: "Aplicaciones",
-        nota: `${payload.producto}${payload.dosis ? " — " + payload.dosis : ""}${payload.zonaNombre ? " • " + payload.zonaNombre : ""}${payload.tipo ? " • " + payload.tipo : ""}${payload.nota ? " • " + payload.nota : ""}`,
-        createdAt: Date.now(),
-      });
-    }
-
     alert("✅ Aplicación guardada");
   }
 
+  await refreshCache("aplicaciones", { force: true });
+  await renderDashboard({ force: true });
+
+  // reset como Producción
   document.getElementById("appForm")?.reset();
   setAppDefaultDate();
 
   await renderAplicaciones();
-  await renderGastos({ force: true });
-  await renderDashboard({ force: true });
+
+  // Dashboard SOLO si estás en Mensual (igual que Ventas)
+  if (document.getElementById("viewMensual")?.classList.contains("activeView")) {
+    await renderDashboard();
+  }
 }
+
+
 
 function beginEditAplicacion(a) {
   EDIT = { tipo: "app", id: a.id };
 
-  // fecha (igual que ventas)
   const f = document.getElementById("appFecha");
   if (f) {
     const s = String(a.fecha || "");
-    f.value = s.includes("T") ? s.slice(0,10) : (s.includes(" ") ? s.split(" ")[0] : s);
+    f.value = s.includes("T") ? s.slice(0, 10) : (s.includes(" ") ? s.split(" ")[0] : s);
   }
 
-  const z = document.getElementById("appZona");
-  if (z) z.value = a.zonaId || "";
+  const zonaEl = document.getElementById("appZona");
+  if (zonaEl) zonaEl.value = a.zonaId || "";
 
-  document.getElementById("appProducto").value = a.producto || "";
-  document.getElementById("appTipo").value = a.tipo || "";
-  document.getElementById("appDosis").value = a.dosis || "";
-  document.getElementById("appCosto").value = a.costo ?? 0;
-  document.getElementById("appNota").value = (a.nota || "").trim();
+  const producto = document.getElementById("appProducto");
+  if (producto) producto.value = a.producto || "";
 
-  const submitBtn = document.querySelector("#appForm button[type='submit']");
-  if (submitBtn) submitBtn.textContent = "Guardar cambios";
+  const tipo = document.getElementById("appTipo");
+  if (tipo) tipo.value = a.tipo || "";
 
-  const cancelBtn = document.querySelector("#appForm .btnCancelEdit");
-  if (cancelBtn) cancelBtn.style.display = "inline-block";
+  const dosis = document.getElementById("appDosis");
+  if (dosis) dosis.value = a.dosis || "";
+
+  const costo = document.getElementById("appCosto");
+  if (costo) costo.value = a.costo ?? 0;
+
+  const nota = document.getElementById("appNota");
+  if (nota) nota.value = a.nota || "";
+
+  const sb = document.querySelector("#appForm button[type='submit']");
+  if (sb) sb.textContent = "Guardar cambios";
+
+  const cb = document.querySelector("#appForm .btnCancelEdit");
+  if (cb) cb.style.display = "inline-block";
 
   document.getElementById("appForm")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
+
 
 async function renderAplicaciones() {
   const ul = document.getElementById("appsList");
@@ -2302,15 +2358,7 @@ async function renderAplicaciones() {
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  let arr = [];
-  try {
-    arr = (await getAplicaciones()) || [];
-  } catch (e) {
-    ul.innerHTML = "<li>No se pudo cargar aplicaciones (backend no listo).</li>";
-    console.error(e);
-    return;
-  }
-
+  const arr = (await getAplicaciones()) || [];
   if (!arr.length) {
     ul.innerHTML = "<li>No hay aplicaciones.</li>";
     return;
@@ -2318,42 +2366,36 @@ async function renderAplicaciones() {
 
   ul.innerHTML = "";
   const limit = LIST_LIMITS.aplicaciones || 10;
+
   arr.slice(0, limit).forEach(a => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
-    const fechaTxt = formatFechaES(a.fecha || a.createdAt);
-    const costoTxt = moneyRD(Number(a.costo || 0));
-    const zonaTxt  = String(a.zonaNombre ?? "").trim();
-    const prodTxt  = String(a.producto ?? "").trim();
-    const tipoTxt  = String(a.tipo ?? "").trim();
+    const fechaTxt = a.fecha ? formatFechaES(a.fecha) : fmtDate(a.createdAt);
+    const zonaTxt = String(a.zonaNombre ?? "").trim();
+    const productoTxt = String(a.producto ?? "").trim();
+    const tipoTxt = String(a.tipo ?? "").trim();
     const dosisTxt = String(a.dosis ?? "").trim();
-    
+    const costoTxt = moneyRD(toMoneyNumber(a.costo ?? 0));
 
-
-    const meta = [
-      tipoTxt,
-      dosisTxt ? dosisTxt : "",
-      zonaTxt ? zonaTxt : ""
-    ].filter(Boolean).join(" • ");
 
     li.innerHTML = `
       <div class="itemTop">
-        <strong>${escapeHtml(costoTxt)}</strong>
+        <strong>${escapeHtml(productoTxt)}${tipoTxt ? " — " + escapeHtml(tipoTxt) : ""}</strong>
         <span class="muted">${escapeHtml(fechaTxt)}</span>
         <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
       </div>
-      <div class="muted">${escapeHtml(prodTxt || "Aplicación")}</div>
-      ${meta ? `<div class="muted">${escapeHtml(meta)}</div>` : ""}
+
+      <div class="muted">${escapeHtml(zonaTxt || "Zona")}</div>
+      ${dosisTxt ? `<div class="muted">🧪 ${escapeHtml(dosisTxt)}</div>` : ""}
+      <div class="muted">💰 ${escapeHtml(costoTxt)}</div>
       ${a.nota ? `<div class="muted">${escapeHtml(a.nota)}</div>` : ""}
     `;
 
-    const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", async (ev) => {
-  ev.stopPropagation();
-  await deleteItem("aplicaciones", g.id);
-});
-
+    li.querySelector(".btnDelete")?.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      await deleteItem("aplicaciones", a.id);
+    });
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
@@ -2364,16 +2406,8 @@ async function renderAplicaciones() {
 
   const btn = ensureLoadMoreBtn(ul, "aplicaciones", renderAplicaciones, 10);
   updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
-
 }
 
-let _dashTimer = null;
-function scheduleDashboard(opts = {}) {
-  clearTimeout(_dashTimer);
-  _dashTimer = setTimeout(() => {
-    renderDashboard(opts).catch(console.error);
-  }, 120); // 120ms: agrupa renders seguidos (guardar + render lista + etc.)
-}
 
 
 
@@ -2386,13 +2420,11 @@ async function renderDashboard(opts = {}) {
   const ventas = CACHE.ventas;
   const gastos = CACHE.gastos;
   const produccion = CACHE.produccion;
-
-  
-
+  const apps = CACHE.aplicaciones || [];
 
   let tv = 0, tl = 0, tg = 0, cv = 0, cg = 0;
   let tMO = 0;
-  let tApps = 0;
+  let tApps = 0; // ESTE será de apps (tabla aplicaciones)
 
 
   // Ventas
@@ -2403,6 +2435,14 @@ async function renderDashboard(opts = {}) {
       cv++;
     }
   });
+
+    // Aplicaciones (desde la tabla aplicaciones)
+  apps.forEach(a => {
+    if (monthKeyFromAnyDate(a.fecha) === mes) {
+      tApps += Number(a.costo) || 0;
+    }
+  });
+
 
   // Gastos
   gastos.forEach(g => {
@@ -2483,7 +2523,8 @@ setText("dashAppLb", `$${appLb.toFixed(2)}`);
 
 
   // Mensual table (por ahora igual)
-  await renderMensualTable(ventas, gastos, produccion);
+  await renderMensualTable(ventas, gastos, produccion, CACHE.aplicaciones || []);
+
 
   // (Opcional) más adelante: renderMensualTablePro(ventas,gastos,produccion,manoObra,apps)
 }
@@ -2508,11 +2549,11 @@ function renderGastosPorCategoria(catMap) {
 }
 
  
-async function renderMensualTable(ventas, gastos, produccion) {
+async function renderMensualTable(ventas, gastos, produccion, aplicaciones) {
   const tbody = document.getElementById("mensualBody");
   if (!tbody) return;
 
-  const rows = buildMonthlyPro(ventas || [], gastos || [], produccion || [], 12);
+  const rows = buildMonthlyPro(ventas || [], gastos || [], produccion || [], aplicaciones || [], 12);
 
   tbody.innerHTML = rows.map(r => `
     <tr>
