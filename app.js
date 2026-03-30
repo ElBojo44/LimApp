@@ -14,48 +14,269 @@ function resetSelectToDefault(selectId) {
     sel.dispatchEvent(new Event("change"));
 }
 
+
+// global (una sola vez, arriba del todo)
+window.__submitLocks = window.__submitLocks || new Map();
+
+function withSubmitLock(formId, handler) {
+  const form = document.getElementById(formId);
+  if (!form) return;
+
+  // evita duplicar listeners si llamas hook 2 veces
+  if (form.dataset.submitLocked === "1") return;
+  form.dataset.submitLocked = "1";
+
+  // lock por form (en memoria)
+  const locks = window.__submitLocks = window.__submitLocks || new Map();
+  locks.set(formId, false);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    if (locks.get(formId)) return; // evita doble submit
+    locks.set(formId, true);
+
+    const btn = form.querySelector("button[type='submit']");
+    const prevTxt = btn?.textContent || "Guardar";
+
+    try {
+      if (btn) { btn.disabled = true; btn.textContent = "Guardando…"; }
+
+      // ✅ AHORA SÍ: llama el handler que tú pasaste
+      await handler(e);
+
+    } catch (err) {
+      console.error(`withSubmitLock(${formId}) error:`, err);
+      alert("❌ Error: " + (err?.message || err));
+    } finally {
+      locks.set(formId, false);
+      if (btn) { btn.disabled = false; btn.textContent = prevTxt; }
+    }
+  });
+}
+
+window.__clickLocks = window.__clickLocks || new Map();
+
+function withClickLock(btnId, handler, opts = {}) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+
+  if (btn.dataset.clickLocked === "1") return;
+  btn.dataset.clickLocked = "1";
+
+  __clickLocks.set(btnId, false);
+
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+
+    if (__clickLocks.get(btnId)) return;
+    __clickLocks.set(btnId, true);
+
+    const oldText = btn.textContent || "";
+    const loadingText = opts.loadingText || "Guardando…";
+
+    btn.disabled = true;
+    btn.textContent = loadingText;
+
+    try {
+      await handler(e);
+    } catch (err) {
+      console.error("withClickLock error:", err);
+      alert("❌ Error: " + (err?.message || err));
+    } finally {
+      __clickLocks.set(btnId, false);
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  });
+}
+
+function withButtonLoading(btn, fn, opts = {}) {
+  if (!btn) return fn();
+
+  const originalText = btn.dataset.origText || btn.textContent;
+  btn.dataset.origText = originalText;
+
+  const loadingText = opts.loadingText || "Guardando…";
+
+  const setLoading = (on) => {
+    if (on) {
+      btn.disabled = true;
+      btn.dataset.loading = "1";
+      btn.textContent = loadingText;
+    } else {
+      btn.disabled = false;
+      btn.dataset.loading = "0";
+      btn.textContent = originalText;
+    }
+  };
+
+  setLoading(true);
+
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => setLoading(false));
+}
+
+function refreshInventarioItemSelects(preselectId = "") {
+  // refresca el select principal de Inventario
+  try { loadInvItems(preselectId); } catch (e) { console.warn("loadInvItems:", e); }
+
+  // refresca el select de Aplicaciones (usa nombre, no id)
+  const it = (INV_ITEMS_CACHE || []).find(x => x.id === preselectId);
+  try { loadAppProductosFromInventario(it?.nombre || ""); } catch (e) { console.warn("loadAppProductosFromInventario:", e); }
+}
+
+
 async function deleteItem(tipo, id) {
   if (!id) return;
+
+  // ✅ BLOQUEO DURO: si intentan borrar un GASTO ligado desde "Gastos", NO permitir
+  if (tipo === "gastos") {
+    try {
+      // trae lista de gastos (cache o fetch)
+      let gastos = [];
+      try {
+        if (typeof CACHE !== "undefined" && CACHE?.gastos?.length) {
+          gastos = CACHE.gastos;
+        } else if (typeof getGastos === "function") {
+          gastos = await getGastos({ force: true });
+        } else {
+          gastos = await apiGet("gastos", { force: true }).catch(() => []);
+        }
+      } catch {
+        gastos = [];
+      }
+
+      const g = (gastos || []).find(x => String(x.id) === String(id));
+
+      const src = String(g?._source ?? g?.source ?? "").trim();
+      const sid = String(g?._sourceId ?? g?.sourceId ?? "").trim();
+
+      // tokens viejos (por si no guardó source/sourceId)
+      const tokenLinked =
+        /\[(mov|mo):[^\]]+\]/.test(String(g?.nota || "")) ||
+        /\[(mov|mo):[^\]]+\]/.test(String(g?.proveedor || ""));
+
+      if ((src || sid) || tokenLinked) {
+        alert("🔒 Este gasto viene de otro módulo. Bórralo desde su módulo de origen.");
+        return;
+      }
+    } catch (e) {
+      console.warn("deleteItem: no pude validar link del gasto; bloqueando por seguridad", e);
+      alert("🔒 Este gasto parece ligado. Bórralo desde su módulo de origen.");
+      return;
+    }
+  }
 
   const ok = confirm("¿Seguro que quieres borrar este registro? Esta acción no se puede deshacer.");
   if (!ok) return;
 
-  // 1) BORRAR (si esto falla, sí mostramos error)
+  console.log("🗑️ DELETE start", { tipo, id });
+
+  // 1) BORRAR EL REGISTRO PRINCIPAL (SIEMPRE PRIMERO)
+  let primary;
   try {
-    const res = await apiPost({ type: tipo, action: "delete", id });
-    if (!res?.ok) {
-      alert("❌ No se pudo borrar. " + (res?.error || ""));
+    primary = await apiPost({ type: tipo, action: "delete", id });
+    console.log("🗑️ DELETE primary response", primary);
+
+    if (!primary?.ok) {
+      alert("❌ No se pudo borrar " + tipo + ". " + (primary?.error || ""));
       return;
     }
   } catch (err) {
-    console.error("DELETE failed:", err);
+    console.error("❌ DELETE primary failed", { tipo, id, err });
     alert("❌ No se pudo borrar el registro.");
     return;
   }
 
-  // 2) UI/Cache refresh (si esto falla, NO decimos que no borró)
+  // 2) CASCADA: si borramos un inventario_mov, borrar gasto(s) relacionados
+  if (tipo === "inventario_mov") {
+    try {
+      const token = `[mov:${id}]`;
+
+      // ✅ IMPORTANTE: definir gastosRaw aquí (evita ReferenceError)
+      let gastosRaw = [];
+      try {
+        if (typeof getGastos === "function") {
+          gastosRaw = await getGastos({ force: true });
+        } else {
+          gastosRaw = await apiGet("gastos", { force: true }).catch(() => []);
+        }
+      } catch {
+        gastosRaw = [];
+      }
+
+      const relacionados = (gastosRaw || []).filter((g) => {
+        const nota = String(g.nota || "");
+        const prov = String(g.proveedor || "");
+        const sid = String(g._sourceId ?? g.sourceId ?? "");
+        const src = String(g._source ?? g.source ?? "");
+
+        return (
+          (src === "inventario_mov" && sid === String(id)) ||
+          nota.includes(token) ||
+          prov.includes(token)
+        );
+      });
+
+      console.log("🧾 cascade inventario->gastos", { token, encontrados: relacionados.length });
+
+      for (const g of relacionados) {
+        try {
+          const r2 = await apiPost({ type: "gastos", action: "delete", id: g.id });
+          if (!r2?.ok) console.warn("DELETE gasto not ok:", r2);
+        } catch (e) {
+          console.warn("No se pudo borrar gasto relacionado:", g?.id, e);
+        }
+      }
+
+      // limpia caches de gastos para que se refleje en UI
+      try { invalidateGetCache("gastos"); } catch {}
+      try {
+        if (typeof CACHE !== "undefined" && CACHE) {
+          CACHE.gastos = null;
+          CACHE.loadedAt = 0;
+        }
+      } catch {}
+
+      // refresca vista de gastos si existe
+      try { await renderGastos?.({ force: true }); } catch {}
+    } catch (e) {
+      console.warn("Cascada inventario->gastos falló:", e);
+    }
+  }
+
+  // 3) REFRESH UI + CACHES del tipo borrado
   try {
-    // invalida cache del GET del storage.js
-    try { invalidateGetCache(tipo); } catch (e) {}
+    try { invalidateGetCache(tipo); } catch {}
+    try {
+      if (typeof CACHE !== "undefined" && CACHE) {
+        CACHE[tipo] = null;
+        CACHE.loadedAt = 0;
+      }
+    } catch {}
 
-    // invalida cache nivel app.js
-    try { if (CACHE) { CACHE[tipo] = null; CACHE.loadedAt = 0; } } catch (e) {}
-
-    // re-render según tipo
     if (tipo === "ventas") await renderVentas({ force: true });
     if (tipo === "gastos") await renderGastos({ force: true });
     if (tipo === "produccion") await renderProduccion({ force: true });
     if (tipo === "manoobra") await renderManoObraSimple();
     if (tipo === "aplicaciones") await renderAplicaciones();
+    if (tipo === "inventario_mov") await renderInventario({ force: true });
 
-    scheduleDashboard({ force: true });
-  } catch (err) {
-    console.warn("Delete OK, refresh UI failed:", err);
-    // No alert aquí — porque ya borró.
+    if (typeof scheduleDashboardSafe === "function") {
+      scheduleDashboardSafe({ force: true });
+    } else if (typeof scheduleDashboard === "function") {
+      scheduleDashboard({ force: true });
+    } else if (typeof renderDashboard === "function") {
+      renderDashboard({ force: true }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn("Refresh UI failed:", e);
   }
+
+  console.log("✅ DELETE done", { tipo, id });
 }
-
-
 
   // ===============================
 // "Ver más" (paginación local)
@@ -66,6 +287,7 @@ const LIST_LIMITS = {
   produccion: 10,
   manoobra: 10,
   aplicaciones: 10,
+  inventario_mov: 10,
 };
 
 function resetLimit(tipo, n = 10) {
@@ -308,14 +530,40 @@ function buildMonthlyPro(ventas = [], gastos = [], produccion = [], aplicaciones
 // ===============================
 // CACHE (nivel 1 - memoria) + TTL
 // ===============================
+
+
 const CACHE = {
   ventas: null,
   gastos: null,
   produccion: null,
   manoobra: null,
   aplicaciones: null,
+  inventario_mov: null,
   loadedAt: 0,
 };
+
+// ===============================
+// CACHE Inventario Items (separado)
+// ===============================
+let INV_ITEMS_CACHE = null;
+let INV_ITEMS_LOADED_AT = 0;
+const INV_ITEMS_TTL = 60_000;
+
+async function getInvItemsCached(opts = {}) {
+  const force = !!opts.force;
+
+  // ✅ si ya están cargados desde bootstrap, úsalo directo
+  if (!force && Array.isArray(INV_ITEMS_CACHE) && INV_ITEMS_LOADED_AT) {
+    const fresh = (Date.now() - INV_ITEMS_LOADED_AT) < INV_ITEMS_TTL;
+    if (fresh) return INV_ITEMS_CACHE;
+  }
+
+  const items = await getInventarioItems({ force });
+  INV_ITEMS_CACHE = items || [];
+  INV_ITEMS_LOADED_AT = Date.now();
+  return INV_ITEMS_CACHE;
+}
+
 
 const CACHE_TTL_MS = 60_000; // 60s (ajústalo)
 
@@ -323,42 +571,65 @@ function cacheIsFresh() {
   return CACHE.loadedAt && (Date.now() - CACHE.loadedAt) < CACHE_TTL_MS;
 }
 
+let _warmCacheInFlight = null;
+
 async function warmCache(opts = {}) {
   const force = !!opts.force;
 
   // si está fresco, no vuelvas a pegar al backend
-  if (!force && cacheIsFresh() && CACHE.ventas && CACHE.gastos && CACHE.produccion && CACHE.aplicaciones) {
+  if (
+    !force &&
+    cacheIsFresh() &&
+    Array.isArray(CACHE.ventas) &&
+    Array.isArray(CACHE.gastos) &&
+    Array.isArray(CACHE.produccion) &&
+    Array.isArray(CACHE.aplicaciones)
+  ) {
     return CACHE;
   }
 
-  const [v, g, p, a] = await Promise.all([
-    getVentas({ force }),
-    getGastos({ force }),
-    getProduccion({ force }),
-    getAplicaciones ? getAplicaciones({ force }) : Promise.resolve([]),
-  ]);
+  // ✅ candado: si ya hay un warmCache corriendo, espera ese mismo
+  if (!force && _warmCacheInFlight) return _warmCacheInFlight;
 
-  CACHE.ventas = v || [];
-  CACHE.gastos = g || [];
-  CACHE.produccion = p || [];
-  CACHE.aplicaciones = a || [];
-  CACHE.loadedAt = Date.now();
+  const run = async () => {
+    const [v, g, p, a] = await Promise.all([
+      getVentas({ force }),
+      getGastos({ force }),
+      getProduccion({ force }),
+      getAplicaciones ? getAplicaciones({ force }) : Promise.resolve([]),
+    ]);
 
-  return CACHE;
+    CACHE.ventas = v || [];
+    CACHE.gastos = g || [];
+    CACHE.produccion = p || [];
+    CACHE.aplicaciones = a || [];
+    CACHE.loadedAt = Date.now();
+
+    return CACHE;
+  };
+
+  _warmCacheInFlight = run();
+
+  try {
+    return await _warmCacheInFlight;
+  } finally {
+    _warmCacheInFlight = null;
+  }
 }
-
 
 // refresca SOLO un tipo (y deja lo demás intacto)
 async function refreshCache(type, opts = {}) {
   const force = !!opts.force;
+
   if (type === "ventas") CACHE.ventas = await getVentas({ force });
-  if (type === "gastos") CACHE.gastos = await getGastos({ force });
-  if (type === "produccion") CACHE.produccion = await getProduccion({ force });
-  if (type === "aplicaciones") CACHE.aplicaciones = await (getAplicaciones ? getAplicaciones({ force }) : []);
+  else if (type === "gastos") CACHE.gastos = await getGastos({ force });
+  else if (type === "produccion") CACHE.produccion = await getProduccion({ force });
+  else if (type === "aplicaciones") CACHE.aplicaciones = await (getAplicaciones ? getAplicaciones({ force }) : []);
+  else if (type === "manoobra") CACHE.manoobra = await getManoObra({ force });         // ✅
+  else if (type === "inventario_mov") CACHE.inventario_mov = await getInventarioMov({ force }); // opcional
+
   CACHE.loadedAt = Date.now();
 }
-
-
   
 // ===============================
 // 🍋 App Limones - app.js (LIMPIO)
@@ -438,35 +709,82 @@ function fillClienteSelect() {
       .map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.nombre || "")}</option>`)
       .join("");
 
-  // Preservar selección anterior si todavía existe
-  if (prev && [...sel.options].some(o => o.value === prev)) {
-    sel.value = prev;
-  } else {
-    sel.value = "";
-  }
+  sel.value = (prev && [...sel.options].some(o => o.value === prev)) ? prev : "";
 }
 
+// ---------- CATÁLOGOS ----------
+async function loadCatalogosFromMemory() {
+  fillSelect("gastoCategoria", GASTO_CATS, true, true);
+  fillSelect("gastoEmpleado", EMPLEADOS, true, true);
+  fillSelect("prodZona", ZONAS, true, true);
+  fillSelect("appZona", ZONAS, true, true);
+  fillSelect("moEmpleado", EMPLEADOS, true, true);
+  fillSelect("moZona", ZONAS, false);
+  fillSelect("moTarea", LABORES, true, true);
+}
 
+async function loadCatalogos(opts = {}) {
+  const force = !!opts.force;
+
+  try { ZONAS = await apiGet("zonas", { force }); } catch {}
+  try { LABORES = await apiGet("labores", { force }); } catch {}
+  try { EMPLEADOS = await apiGet("empleados", { force }); } catch {}
+  try { GASTO_CATS = await apiGet("gasto_categorias", { force }); } catch {}
+
+  await loadCatalogosFromMemory();
+}
 
 // ---------- INIT ----------
 async function initApp() {
-  // Hooks (solo listeners, nada de network aquí)
   hookVentas();
   hookGastos();
+  hookProduccion();
   hookCatalogForms();
   hookManoObraSimple();
   hookAplicaciones();
+  hookInventario();
 
-  // Catálogos locales (clientes)
   loadClientes();
   fillClienteSelect();
   hookClientesVentas();
-
   initDashboard();
 
-  // ✅ Carga inicial en paralelo para que “abra” más rápido
-  await loadCatalogos();
-  hookProduccion();
+  const all = await apiBootstrap();
+
+  CACHE.ventas = all.ventas || [];
+  CACHE.gastos = all.gastos || [];
+  CACHE.produccion = all.produccion || [];
+  CACHE.aplicaciones = all.aplicaciones || [];
+  CACHE.loadedAt = Date.now();
+
+  ZONAS = all.zonas || [];
+  LABORES = all.labores || [];
+  EMPLEADOS = all.empleados || [];
+
+  // inventario items desde bootstrap
+  refreshInventarioItemSelects();
+  refreshAppProductoSelects(); // ✅ para Aplicaciones
+
+
+  // ✅ refrescar dropdowns de inventario (porque hookInventario corrió antes)
+document.querySelectorAll(".invItemSel, #invItem, #invMovItem, #invProducto").forEach((sel) => {
+  fillInvItemSelectEl(sel, INV_ITEMS_CACHE);
+});
+
+  // gasto cats desde bootstrap + fallback
+ GASTO_CATS = all.gasto_categorias || [];
+ if (!Array.isArray(GASTO_CATS) || GASTO_CATS.length === 0) {
+   try { GASTO_CATS = await getGastoCategorias({ force: true }); } catch {}
+ }
+
+
+  // ✅ IMPORTANT: esperar
+  await loadCatalogosFromMemory();
+
+  // ✅ solo si bootstrap no trajo items
+  if (!Array.isArray(INV_ITEMS_CACHE) || INV_ITEMS_CACHE.length === 0) {
+    try { await getInvItemsCached({ force: true }); } catch (e) { console.warn("inv items:", e); }
+  }
 
   await Promise.all([
     renderVentas(),
@@ -474,13 +792,12 @@ async function initApp() {
     renderProduccion(),
     renderManoObraSimple(),
     renderAplicaciones(),
+    renderInventario(),
   ]);
 
-  // Dashboard usa cache interno (storage.js) para no “machacar” el backend
   await renderDashboard();
 }
-
-
+ 
 
 // ===============================
 // PRODUCCIÓN (estilo AppSheet, sin AppSheet plataforma)
@@ -521,7 +838,9 @@ function hookProduccion() {
 
   // 1 fila por defecto
   const wrap = document.getElementById("prodEmps");
-  if (wrap && wrap.children.length === 0) addProdEmpRow();
+  if (wrap && wrap.querySelectorAll(".prodEmpleadoSel").length === 0) {
+    addProdEmpRow();
+  }
 
   // + Agregar empleado
   document.getElementById("prodAddEmp")?.addEventListener("click", addProdEmpRow);
@@ -627,17 +946,16 @@ function hookProduccion() {
   });
 
   // Submit producción (local)
-  const prodFormEl = document.getElementById("prodForm");
-  prodFormEl?.addEventListener("submit", saveProduccion);
+  withSubmitLock("prodForm", async () => {
+  await saveProduccion();
+});
 
   ensureCancelBtn("prodForm", () => {
     exitEditProduccion();
   });
 
 }
-
-  
-
+ 
 function fillEmpleadoSelectEl(sel) {
   if (!sel) return;
   sel.innerHTML =
@@ -649,6 +967,54 @@ function fillEmpleadoSelectEl(sel) {
       .map(e => `<option value="${escapeHtml(e.id)}">${escapeHtml(e.nombre || "")}</option>`)
       .join("");
 }
+
+function fillInvItemSelectEl(sel, items) {
+  if (!sel) return;
+
+  const prev = sel.value || "";
+
+  sel.innerHTML =
+    `<option value="">Selecciona…</option>
+     <option value="__NEW__">➕ Nuevo…</option>` +
+    (items || [])
+      .slice()
+      .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es"))
+      .map(it => `<option value="${escapeHtml(it.id)}">${escapeHtml(it.nombre || "")}</option>`)
+      .join("");
+
+  // preservar selección si todavía existe
+  if (prev && prev !== "__NEW__" && [...sel.options].some(o => o.value === prev)) {
+    sel.value = prev;
+  } else {
+    sel.value = "";
+  }
+}
+
+function refreshAppProductoSelects() {
+  const items = Array.isArray(INV_ITEMS_CACHE) ? INV_ITEMS_CACHE : [];
+
+  // cambia estos selectores a los IDs/clases reales que uses en Aplicaciones
+  document.querySelectorAll(".appProductoSel, #appProducto, #appProdId").forEach((sel) => {
+    if (!sel) return;
+    const prev = sel.value || "";
+
+    sel.innerHTML =
+      `<option value="">Selecciona…</option>
+       <option value="__NEW__">➕ Nuevo…</option>` +
+      items
+        .slice()
+        .sort((a,b)=>String(a.nombre||"").localeCompare(String(b.nombre||""),"es"))
+        .map(it => `<option value="${escapeHtml(it.id)}">${escapeHtml(it.nombre || "")}</option>`)
+        .join("");
+
+    if (prev && prev !== "__NEW__" && [...sel.options].some(o => o.value === prev)) {
+      sel.value = prev;
+    } else {
+      sel.value = "";
+    }
+  });
+}
+
 
 function addProdEmpRow(preselectId = "") {
   const wrap = document.getElementById("prodEmps");
@@ -800,35 +1166,51 @@ function hookGastos() {
   });
 
   // Guardar nueva categoría
-  document.getElementById("gastoSaveNewCat")?.addEventListener("click", async () => {
+ document.getElementById("gastoSaveNewCat")?.addEventListener("click", async () => {
+  try {
     const nombreEl = document.getElementById("gastoNewCatNombre");
     const nombre = (nombreEl?.value || "").trim();
     if (!nombre) return alert("Pon el nombre de la categoría.");
 
-    await addGastoCategoria({
-      id: makeId(),
+    const exists = (GASTO_CATS || []).some(c =>
+      String(c.nombre || "").trim().toLowerCase() === nombre.toLowerCase()
+    );
+    if (exists) return alert("Esa categoría ya existe.");
+
+    // ✅ 1) crear objeto
+    const nuevaCat = {
+      id: makeId("gcat"),
       nombre,
       activo: "1",
       createdAt: Date.now()
-    });
+    };
 
-    
+    // ✅ 2) guardar en Sheets
+    await addGastoCategoria(nuevaCat);
 
+    // ✅ 3) update optimista en memoria (para que salga de una)
+    GASTO_CATS = Array.isArray(GASTO_CATS) ? GASTO_CATS : [];
+    GASTO_CATS.unshift(nuevaCat);
 
-    await loadCatalogos(); // recarga y rellena selects
+    // ✅ 4) refresca el select sin recargar todo
+    await loadCatalogosFromMemory();
 
-    const nueva = (GASTO_CATS || []).find(c => String(c.nombre || "").trim().toLowerCase() === nombre.toLowerCase());
-    if (nueva) document.getElementById("gastoCategoria").value = nueva.id;
+    // ✅ 5) selecciona la nueva
+    const sel = document.getElementById("gastoCategoria");
+    if (sel) sel.value = nuevaCat.id;
 
-    document.getElementById("gastoNewCatBox").style.display = "none";
+    // ✅ 6) cierra mini-form
+    const box = document.getElementById("gastoNewCatBox");
+    if (box) box.style.display = "none";
     if (nombreEl) nombreEl.value = "";
-  });
+
+  } catch (err) {
+    console.error("save new gasto cat error:", err);
+    alert("❌ No se pudo guardar la categoría: " + (err?.message || err));
+  }
+});
 
 
-  
-  
-
-  
   // Empleado: si elige "➕ Nuevo…", abrir mini form
   const empSel = document.getElementById("gastoEmpleado");
   empSel?.addEventListener("change", () => {
@@ -840,6 +1222,7 @@ function hookGastos() {
 
   // Guardar nuevo empleado (reusa addEmpleado)
   document.getElementById("gastoSaveNewEmp")?.addEventListener("click", async () => {
+  try {
     const nombreEl = document.getElementById("gastoNewEmpNombre");
     const telEl = document.getElementById("gastoNewEmpTel");
 
@@ -847,7 +1230,7 @@ function hookGastos() {
     const tel = (telEl?.value || "").trim();
     if (!nombre) return alert("Pon el nombre del empleado.");
 
-    await addEmpleado({
+    const newEmp = {
       id: makeId(),
       nombre,
       apodo: "",
@@ -855,112 +1238,150 @@ function hookGastos() {
       zonaId: "",
       activo: "1",
       createdAt: Date.now()
-    });
+    };
 
-    await loadCatalogos(); // refresca EMPLEADOS + rellena gastoEmpleado
+    await addEmpleado(newEmp);
 
-    // seleccionar nuevo empleado
-    const nuevo = (EMPLEADOS || []).find(e => String(e.nombre || "").trim().toLowerCase() === nombre.toLowerCase());
-    if (nuevo) document.getElementById("gastoEmpleado").value = nuevo.id;
+    // ✅ actualiza memoria (sin loadCatalogos)
+    EMPLEADOS = [newEmp, ...(EMPLEADOS || [])];
 
+    // ✅ refresca solo el select de empleados en Gastos
+    fillSelect("gastoEmpleado", EMPLEADOS, true, true);
+    document.getElementById("gastoEmpleado").value = newEmp.id;
+
+    // cerrar mini-form + limpiar
     document.getElementById("gastoNewEmpBox").style.display = "none";
     if (nombreEl) nombreEl.value = "";
     if (telEl) telEl.value = "";
-  });
+  } catch (err) {
+    console.error("save new gasto emp error:", err);
+    alert("❌ No se pudo guardar el empleado: " + (err?.message || err));
+  }
+});
+
 
   // Submit gasto
-  document.getElementById("gastoForm")?.addEventListener("submit", saveGasto);
-  
+  // ✅ Submit gasto con bloqueo anti-doble-click
+withSubmitLock("gastoForm", async () => {
+  await saveGasto();
+});
+
 }
 
-async function saveGasto(e) {
-  e.preventDefault();
+async function saveGasto() {
 
-  const fecha = normalizeISODate(document.getElementById("gastoFecha")?.value);
+  try {
+    const fecha = normalizeISODate(document.getElementById("gastoFecha")?.value);
 
-  const catEl = document.getElementById("gastoCategoria");
-  const categoriaId = catEl?.value || "";
-  const categoriaNombre = catEl?.selectedOptions?.[0]?.textContent || "";
+    const catEl = document.getElementById("gastoCategoria");
+    const categoriaId = catEl?.value || "";
+    const categoriaNombre = catEl?.selectedOptions?.[0]?.textContent || "";
 
-  const monto = Number(document.getElementById("gastoMonto")?.value || 0);
-  const metodoPago = document.getElementById("gastoMetodo")?.value || "";
-  const proveedor = (document.getElementById("gastoProveedor")?.value || "").trim();
+    const monto = Number(document.getElementById("gastoMonto")?.value || 0);
+    const metodoPago = document.getElementById("gastoMetodo")?.value || "";
+    const proveedor = (document.getElementById("gastoProveedor")?.value || "").trim();
 
-  const empEl = document.getElementById("gastoEmpleado");
-  const empleadoId = empEl?.value || "";
-  const empleadoNombre = empEl?.selectedOptions?.[0]?.textContent || "";
+    const empEl = document.getElementById("gastoEmpleado");
+    const empleadoId = empEl?.value || "";
+    const empleadoNombre = empEl?.selectedOptions?.[0]?.textContent || "";
 
-  const nota = (document.getElementById("gastoNota")?.value || "").trim();
+    const nota = (document.getElementById("gastoNota")?.value || "").trim();
 
-  // recibo nuevo (si lo suben). Si no suben nada, no vamos a borrar el viejo.
-  const file = document.getElementById("gastoRecibo")?.files?.[0] || null;
-  const reciboFotoNew = file ? await compressImageFile(file) : "";
+    // recibo nuevo (si lo suben). Si no suben nada, no vamos a borrar el viejo.
+    const file = document.getElementById("gastoRecibo")?.files?.[0] || null;
+    const reciboFotoNew = file ? await compressImageFile(file) : "";
 
-  if (!fecha) return alert("Fecha inválida.");
-  if (!categoriaId) return alert("Categoría requerida: selecciona una.");
-  if (categoriaId === "__NEW__") return alert("Categoría requerida: termina de crearla.");
-  if (!(monto > 0)) return alert("Monto debe ser > 0.");
-  if (!metodoPago) return alert("Selecciona método de pago.");
+    if (!fecha) return alert("Fecha inválida.");
+    if (!categoriaId) return alert("Categoría requerida: selecciona una.");
+    if (categoriaId === "__NEW__") return alert("Categoría requerida: termina de crearla.");
+    if (!(monto > 0)) return alert("Monto debe ser > 0.");
+    if (!metodoPago) return alert("Selecciona método de pago.");
 
-  const patch = {
-    fecha,
-    categoriaId,
-    categoriaNombre,
-    monto: round2(monto),
-    metodoPago,
-    proveedor,
-    empleadoId: (empleadoId && empleadoId !== "__NEW__") ? empleadoId : "",
-    empleadoNombre: (empleadoId && empleadoId !== "__NEW__") ? empleadoNombre : "",
-    nota
-  };
+    const patch = {
+      fecha,
+      categoriaId,
+      categoriaNombre,
+      monto: round2(monto),
+      metodoPago,
+      proveedor,
+      empleadoId: (empleadoId && empleadoId !== "__NEW__") ? empleadoId : "",
+      empleadoNombre: (empleadoId && empleadoId !== "__NEW__") ? empleadoNombre : "",
+      nota
+    };
 
-  // ✅ solo incluir reciboFoto si subieron uno nuevo
-  if (reciboFotoNew) patch.reciboFoto = reciboFotoNew;
+    // ✅ solo incluir reciboFoto si subieron uno nuevo
+    if (reciboFotoNew) patch.reciboFoto = reciboFotoNew;
 
-  // ✅ EDIT vs ADD
-  if (EDIT?.tipo === "gasto" && EDIT?.id) {
-    await updateGasto(EDIT.id, patch);
-
-    // salir de modo edición
-    EDIT = { tipo: null, id: null };
-
-    const submitBtn = document.querySelector("#gastoForm button[type='submit']");
-    if (submitBtn) submitBtn.textContent = "Guardar gasto";
-
-    const cancelBtn = document.querySelector("#gastoForm .btnCancelEdit");
-    if (cancelBtn) cancelBtn.style.display = "none";
-
-    alert("✅ Gasto actualizado");
-  } else {
-    await addGasto({
-      id: makeId(),
-      ...patch,
-      reciboFoto: reciboFotoNew, // en ADD sí puede ir vacío
-      createdAt: Date.now()
-    });
-
-    alert("✅ Gasto guardado");
+    // ✅ EDIT vs ADD
+    if (EDIT?.tipo === "gasto" && EDIT?.id) {
+  // ✅ buscar gasto original (del cache o forzar fetch)
+  let original = (CACHE?.gastos || []).find(x => String(x.id) === String(EDIT.id));
+  if (!original) {
+    try {
+      const g2 = await getGastos?.({ force: true });
+      original = (g2 || []).find(x => String(x.id) === String(EDIT.id));
+    } catch {}
   }
 
-  // 🔄 refrescar caches para que el gasto aparezca inmediatamente
-  // 🔥 Actualiza CACHE local (sin re-fetch)
-await warmCache(); // asegura que CACHE exista
+  // ✅ si era gasto ligado, preservar link
+  const src  = original?._source  ?? original?.source  ?? "";
+  const sid  = original?._sourceId ?? original?.sourceId ?? "";
 
-if (EDIT?.tipo === null) {
-  // fue ADD (ya saliste de EDIT arriba)
-  // si quieres, puedes empujar el nuevo registro aquí (si lo tienes)
-} 
-// En update/add, lo más simple: refresca SOLO gastos una vez cada tanto:
-await refreshCache("gastos"); // 1 solo fetch, no 3
+  if (src) { patch._source = src; patch.source = src; }
+  if (sid) { patch._sourceId = sid; patch.sourceId = sid; }
 
-document.getElementById("gastoForm")?.reset();
-setGastoDefaultDate();
 
-await renderGastos();     // render desde cache
-scheduleDashboard();      // dashboard debounced
+  // ✅ si tenía token [mov:xxx], reponerlo si el usuario lo quitó
+  const tokenMatch =
+    String(original?.nota || "").match(/\[mov:[^\]]+\]/) ||
+    String(original?.proveedor || "").match(/\[mov:[^\]]+\]/);
 
+  const token = tokenMatch?.[0] || "";
+
+  if (token) {
+    if (patch.nota && !patch.nota.includes(token)) patch.nota = `${patch.nota} ${token}`.trim();
+    if (!patch.nota) patch.nota = token;
+
+    if (patch.proveedor && !patch.proveedor.includes(token)) patch.proveedor = `${patch.proveedor} ${token}`.trim();
+  }
+
+  await updateGasto(EDIT.id, patch);
+
+  // salir de modo edición
+  EDIT = { tipo: null, id: null };
+
+  const submitBtn = document.querySelector("#gastoForm button[type='submit']");
+  if (submitBtn) submitBtn.textContent = "Guardar gasto";
+
+  const cancelBtn = document.querySelector("#gastoForm .btnCancelEdit");
+  if (cancelBtn) cancelBtn.style.display = "none";
+
+  alert("✅ Gasto actualizado");
+}else {
+      await addGasto({
+        id: makeId(),
+        ...patch,
+        reciboFoto: reciboFotoNew, // en ADD sí puede ir vacío
+        createdAt: Date.now()
+      });
+
+      alert("✅ Gasto guardado");
+    }
+
+    // 🔄 refrescar SOLO gastos (1 fetch real)
+    await refreshCache("gastos", { force: true });
+
+    document.getElementById("gastoForm")?.reset();
+    setGastoDefaultDate();
+
+    await renderGastos({ force: true });
+    scheduleDashboardSafe?.({ force: true });
+
+  } catch (err) {
+    console.error("saveGasto error:", err);
+    alert("❌ Error guardando gasto: " + (err?.message || err));
+  }
 }
-
 
 
 function beginEditGasto(g) {
@@ -997,35 +1418,53 @@ function beginEditGasto(g) {
   document.getElementById("gastoForm")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-
-
-
 async function renderGastos(opts = {}) {
   const list = document.getElementById("gastosList");
   if (!list) return;
 
-  await warmCache(opts);
+  list.innerHTML = "<li>Cargando…</li>";
+
+  // ✅ SOLO refresca gastos (no uses warmCache aquí)
+  try {
+    await refreshCache("gastos", { force: !!opts.force });
+  } catch (e) {
+    console.error("refreshCache(gastos) failed:", e);
+  }
+
   const items = (CACHE.gastos || []);
 
-  list.innerHTML = "";
-  const limit = LIST_LIMITS.gastos || 10;
-  items.slice(0, limit).forEach(g => {
-    const li = document.createElement("li");
+list.innerHTML = "";
+if (!items.length) {
+  list.innerHTML = "<li>No hay gastos.</li>";
+  return;
+}
 
-    // ✅ usa el mismo estilo “card” que Ventas / Producción
+const sorted = [...items].sort((a, b) => {
+  const da = new Date(a.fecha || a.createdAt || 0).getTime();
+  const db = new Date(b.fecha || b.createdAt || 0).getTime();
+  return db - da;
+});
+
+const limit = LIST_LIMITS.gastos || 10;
+
+sorted.slice(0, limit).forEach((g) => {
+    const li = document.createElement("li");
     li.className = "ventaItem manoItem";
 
     const montoTxt = moneyRD(g.monto || 0);
-    const fechaTxt = formatFechaES(g.fecha || g.createdAt);    
+    const fechaTxt = formatFechaES(g.fecha || g.createdAt);
     const catTxt = (g.categoriaNombre || g.categoria || "Sin categoría").trim();
     const metodoTxt = (g.metodoPago || "").trim();
-    const provTxt = (g.proveedor || "").trim();
+    const provTxt = stripMovToken((g.proveedor || "").trim());
+    const notaTxt = stripMovToken((g.nota || "").trim());
     const empTxt = (g.empleadoNombre || "").trim();
+    const src = String(g._source ?? g.source ?? "").trim();
+    const sid = String(g._sourceId ?? g.sourceId ?? "").trim();
+    const isLinked = !!src || !!sid; // viene de otro módulo
 
-    
-
-    // Línea 2 abajo: empleado opcional (como “Alberto — Tarea 5 • 8h” si lo tienes en nota)
-    
+    const deleteHtml = isLinked
+    ? `<span class="muted" style="margin-left:10px;">🔒</span>`
+    : `<button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>`;
 
     const catLower = String(catTxt || "").trim().toLowerCase();
     const isMO = (catLower === "mano de obra" || catLower === "manoobra");
@@ -1041,37 +1480,43 @@ async function renderGastos(opts = {}) {
       <div class="itemTop">
         <strong>💰 ${escapeHtml(montoTxt)}</strong>
         <span class="muted">${escapeHtml(fechaTxt)}</span>
-        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
+        ${deleteHtml}
       </div>
 
       <div class="muted">${escapeHtml(linea2)}</div>
-
       ${linea3 ? `<div class="muted">${escapeHtml(linea3)}</div>` : ""}
-
-      ${(!isMO && g.nota) ? `<div class="ventaNota">${escapeHtml(g.nota)}</div>` : ""}
+      ${(!isMO && notaTxt) ? `<div class="ventaNota">${escapeHtml(notaTxt)}</div>` : ""}
     `;
-      
 
     const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", async (ev) => {
-  ev.stopPropagation();
-  await deleteItem("gastos", g.id);
-});
+    if (delBtn && !isLinked) {
+      delBtn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        await deleteItem("gastos", g.id);
 
+        await refreshCache("gastos", { force: true });
+        await renderGastos({ force: true });
+        scheduleDashboardSafe?.({ force: true });
+      });
+    }
 
     li.style.cursor = "pointer";
     li.title = "Click para editar";
     li.addEventListener("click", () => beginEditGasto(g));
+
     list.appendChild(li);
   });
 
-    const btn = ensureLoadMoreBtn(list, "gastos", () => renderGastos(opts), 10);
-    updateLoadMoreBtn(btn, Math.min(limit, items.length), items.length, 10);
+  const btn = ensureLoadMoreBtn(list, "gastos", () => renderGastos(opts), 10);
+  updateLoadMoreBtn(btn, Math.min(limit, sorted.length), sorted.length, 10);
 
-
+  function stripMovToken(s) {
+    return String(s || "")
+      .replace(/\s*\[(mov|mo):[^\]]+\]\s*/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
 }
-
-
 
 
 // ---------- DASHBOARD MONTH FIX ----------
@@ -1086,30 +1531,8 @@ function initDashboard() {
   m.addEventListener("change", () => renderDashboard());
 }
 
-// ---------- CATÁLOGOS ----------
-async function loadCatalogos() {
-  ZONAS = await getZonas();
-  LABORES = await getLabores();
-  EMPLEADOS = await getEmpleados();
-  GASTO_CATS = await getGastoCategorias();
-
-// Categoría de gastos (con + Nuevo…)
-fillSelect("gastoCategoria", GASTO_CATS, true, true);
-
-
-
-
 
 // Empleado en gastos (opcional, con + Nuevo…)
-fillSelect("gastoEmpleado", EMPLEADOS, true, true);
-
-  fillSelect("prodZona", ZONAS, true, true); // 👈 allowNew = true
-  fillSelect("appZona", ZONAS, true, true);
-  fillSelect("moEmpleado", EMPLEADOS, true, true);
-  fillSelect("moZona", ZONAS, false);
-  fillSelect("moTarea", LABORES, true, true);
-  
-}
 
 function fillSelect(id, arr, allowEmpty, allowNew = false) {
   const sel = document.getElementById(id);
@@ -1198,9 +1621,7 @@ function hookCatalogForms() {
 
 // ---------- PRODUCCIÓN ----------
 
-async function saveProduccion(e) {
-  e.preventDefault();
-
+async function saveProduccion() {
   const fecha = normalizeISODate(document.getElementById("prodFecha")?.value);
   const zonaEl = document.getElementById("prodZona");
   const zonaId = zonaEl?.value || "";
@@ -1225,8 +1646,10 @@ async function saveProduccion(e) {
   if (!(libras > 0)) return alert("Libras debe ser > 0.");
   if (uniqueIds.length === 0) return alert("Agrega por lo menos un empleado.");
 
+  const isEdit = (EDIT?.tipo === "prod" && EDIT?.id);
+
   const data = {
-    id: makeId(),
+    id: isEdit ? EDIT.id : makeId(),
     fecha,
     zonaId,
     zonaNombre,
@@ -1235,37 +1658,52 @@ async function saveProduccion(e) {
     responsableId: uniqueIds.join(","),
     responsableNombre: uniqueNames.join(", "),
     nota,
-    createdAt: Date.now()
+    createdAt: isEdit ? (Date.now()) : Date.now()
   };
 
-  if (typeof addProduccion !== "function") {
-    console.warn("addProduccion no existe en storage.js");
-    alert("Falta addProduccion() en storage.js. Dime y lo agregamos.");
-    return;
+  try {
+    if (isEdit) {
+      if (typeof updateProduccion !== "function") {
+        alert("Falta updateProduccion() en storage.js.");
+        return;
+      }
+      await updateProduccion(EDIT.id, { ...data, id: EDIT.id });
+
+      // ✅ actualiza cache local (sin esperar fetch)
+      if (Array.isArray(CACHE.produccion)) {
+        CACHE.produccion = CACHE.produccion.map(x => String(x.id) === String(EDIT.id) ? { ...x, ...data } : x);
+      }
+
+      exitEditProduccion();
+      alert("✅ Producción actualizada");
+    } else {
+      if (typeof addProduccion !== "function") {
+        alert("Falta addProduccion() en storage.js.");
+        return;
+      }
+      await addProduccion(data);
+
+      // ✅ mete el nuevo en el cache al instante (para que se vea ya)
+      if (!Array.isArray(CACHE.produccion)) CACHE.produccion = [];
+      CACHE.produccion.unshift(data);
+      CACHE.loadedAt = Date.now();
+
+      alert("✅ Producción guardada");
+    }
+
+    // ✅ render inmediato (sin depender del TTL)
+    await renderProduccion({ force: true });
+    scheduleDashboardSafe?.({ force: true });
+
+    // reset form
+    document.getElementById("prodForm")?.reset();
+    setProdDefaultDate();
+
+  } catch (err) {
+    console.error("saveProduccion error:", err);
+    alert("❌ Error guardando producción: " + (err?.message || err));
   }
-
-// ✅ EDIT vs ADD
-if (EDIT?.tipo === "prod" && EDIT?.id) {
-  if (typeof updateProduccion === "function") {
-    await updateProduccion(EDIT.id, { ...data, id: EDIT.id });
-  } else {
-    alert("Falta updateProduccion() en storage.js. Dime y lo agregamos.");
-    return;
-  }
-
-  exitEditProduccion();
-  alert("✅ Producción actualizada");
-} else {
-  await addProduccion(data);
-  alert("✅ Producción guardada");
 }
-
-// refrescar UI
-await refreshCache("produccion");
-await renderProduccion();
-scheduleDashboard();
-}
-
 
 function beginEditProduccion(p) {
   EDIT = { tipo: "prod", id: p.id };
@@ -1321,22 +1759,28 @@ function beginEditProduccion(p) {
 
 
 
-async function renderProduccion() {
+async function renderProduccion(opts = {}) {
   const ul = document.getElementById("prodList");
   if (!ul) return;
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  await warmCache();
-  const arr = (CACHE.produccion || []);
-  if (!arr.length) {
-    ul.innerHTML = "<li>No hay producción.</li>";
-    return;
-  }
+  await warmCache({ force: !!opts.force });
+ const arr = (CACHE.produccion || []);
+if (!arr.length) {
+  ul.innerHTML = "<li>No hay producción.</li>";
+  return;
+}
 
-  ul.innerHTML = "";
-  const limit = LIST_LIMITS.produccion || 10;
-  arr.slice(0, limit).forEach(p => {
+const sorted = [...arr].sort((a, b) => {
+  const da = new Date(a.fecha || a.createdAt || 0).getTime();
+  const db = new Date(b.fecha || b.createdAt || 0).getTime();
+  return db - da;
+});
+
+ul.innerHTML = "";
+const limit = LIST_LIMITS.produccion || 10;
+sorted.slice(0, limit).forEach(p => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
@@ -1374,7 +1818,7 @@ async function renderProduccion() {
   });
 
   const btn = ensureLoadMoreBtn(ul, "produccion", renderProduccion, 10);
-  updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
+  updateLoadMoreBtn(btn, Math.min(limit, sorted.length), sorted.length, 10);
 
 }
 
@@ -1389,8 +1833,7 @@ function exitEditManoObra() {
   const cb = document.querySelector("#moForm .btnCancelEdit");
   if (cb) cb.style.display = "none";
 
-  const form = document.getElementById("moForm");
-  form?.reset();
+  const form = document.getElementById("moForm")
 
   const f = document.getElementById("moFecha");
   if (f) f.value = todayISO();
@@ -1532,145 +1975,296 @@ document.getElementById("moSaveNewTask")?.addEventListener("click", async () => 
   recalcMOTotal();
 
 
-  // Submit mano de obra simple (pagamos por día)
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
+ // Submit mano de obra simple (pagamos por día)
+withSubmitLock("moForm", async () => {
+  const fecha = normalizeISODate(document.getElementById("moFecha")?.value || "");
+  const empleadoId = document.getElementById("moEmpleado")?.value || "";
+  const tareaId = document.getElementById("moTarea")?.value || "";
+  const dias = Number(document.getElementById("moHoras")?.value || 0);
+  const pagoDia = Number(document.getElementById("moPagoDia")?.value || 0);
+  const nota = (document.getElementById("moNota")?.value || "").trim();
 
-    const fecha = normalizeISODate(document.getElementById("moFecha")?.value || "");
-    const empleadoId = document.getElementById("moEmpleado")?.value || "";
-    const tareaId = document.getElementById("moTarea")?.value || "";
-    const dias = Number(document.getElementById("moHoras")?.value || 0); // reutilizamos el input moHoras como "días"
-    const pagoDia = Number(document.getElementById("moPagoDia")?.value || 0);
-    const nota = (document.getElementById("moNota")?.value || "").trim();
+  if (!fecha) return alert("Fecha inválida. Usa el calendario.");
+  if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
+  if (!tareaId || tareaId === "__NEW__") return alert("Selecciona una tarea.");
+  if (!isFinite(dias) || dias <= 0) return alert("Días de trabajo debe ser > 0.");
+  if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago por día debe ser >= 0.");
 
-    if (!fecha) return alert("Fecha inválida. Usa el calendario.");
-    if (!empleadoId || empleadoId === "__NEW__") return alert("Selecciona un empleado.");
-    if (!tareaId || tareaId === "__NEW__") return alert("Selecciona una tarea.");
-    if (!isFinite(dias) || dias <= 0) return alert("Días de trabajo debe ser > 0.");
-    if (!isFinite(pagoDia) || pagoDia < 0) return alert("Pago por día debe ser >= 0.");
+  const emp = (EMPLEADOS || []).find(x => x.id === empleadoId) || {};
+  const task = (LABORES || []).find(x => x.id === tareaId) || {};
 
-    const emp = (EMPLEADOS || []).find(x => x.id === empleadoId) || {};
-    const task = (LABORES || []).find(x => x.id === tareaId) || {};
+  const totalMO = round2(dias * pagoDia);
 
-    const totalMO = round2(dias * pagoDia);
+  const payload = {
+    fecha,
+    empleadoId: emp.id || "",
+    empleadoNombre: emp.nombre || "",
+    tareaId: task.id || "",
+    tareaNombre: task.nombre || "",
+    horas: round2(dias),
+    pagoDia: round2(pagoDia),
+    total: totalMO,
+    nota,
+  };
 
-    const payload = {
-      fecha,
-      empleadoId: emp.id || "",
-      empleadoNombre: emp.nombre || "",
-      tareaId: task.id || "",
-      tareaNombre: task.nombre || "",
-      horas: round2(dias),        // mantenemos el nombre "horas" en storage, pero ahora representa "días"
-      pagoDia: round2(pagoDia),
-      total: totalMO,             // campo extra (no rompe si la hoja lo ignora)
-      nota,
-    };
+  const isEdit = (EDIT?.tipo === "mo" && EDIT?.id);
+  const moId = isEdit ? String(EDIT.id) : makeId(); // ✅ definido para ambos
 
-    if (EDIT?.tipo === "mo" && EDIT?.id) {
-  await updateManoObra(EDIT.id, payload);
-  exitEditManoObra();
-  alert("✅ Mano de obra actualizada");
-} else {
-  await addManoObra({
-    id: makeId(),
-    ...payload,
-    createdAt: Date.now(),
-  });
+  // ✅ asegura caches
+  CACHE.manoobra = Array.isArray(CACHE.manoobra) ? CACHE.manoobra : [];
+  CACHE.gastos = (CACHE && Array.isArray(CACHE.gastos)) ? CACHE.gastos : (CACHE.gastos = []);
 
-  let gastoOk = true;
-  try {
-    await addGasto({
-      id: makeId(),
-      fecha,
-      monto: totalMO,
-      categoriaId: "",
-      categoriaNombre: "Mano de obra",
-      categoria: "Mano de obra",
-      metodoPago: "EFECTIVO",
-      proveedor: "",
-      empleadoId: emp.id || "",
-      empleadoNombre: emp.nombre || "",
-      nota: `${empNombre} — ${tareaNombre} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${nota ? " • " + nota : ""}`,
-      createdAt: Date.now()
-    });
-  } catch (err) {
-    gastoOk = false;
-    console.error("No se pudo crear gasto automático:", err);
-  }
+  if (isEdit) {
+    // 1) backend update
+    await updateManoObra(moId, payload);
+    // ✅ también actualiza el gasto automático ligado (si existe)
+try {
+  const gastos = await getGastos({ force: true });
+  const token = `[mo:${moId}]`;
 
-  if (!gastoOk) alert("⚠️ Mano de obra se guardó, pero el gasto automático falló.");
-  alert("✅ Mano de obra guardada");
-}
+  const ligado = (gastos || []).find(g => {
+  const src = String(g._source ?? g.source ?? "").trim().toLowerCase();
+  const sid = String(g._sourceId ?? g.sourceId ?? "").trim();
+  const notaG = String(g.nota || "");
+  const provG = String(g.proveedor || "");
 
-// ✅ refrescar SIEMPRE (nuevo y editar)
-await renderManoObraSimple();
-await renderGastos();
-scheduleDashboard?.();
-
-form.reset();
-const mf = document.getElementById("moFecha");
-if (mf) mf.value = todayISO();
-
+  return (
+    (src === "manoobra" && sid === String(moId)) ||
+    notaG.includes(token) ||
+    provG.includes(token)
+  );
 });
 
+  if (ligado) {
+    const empNombreSafe = emp.nombre || payload.empleadoNombre || "";
+    const tareaNombreSafe = task.nombre || payload.tareaNombre || "";
+    const notaExtra = (payload.nota || "").trim();
+
+    const notaNueva =
+      `${empNombreSafe} — ${tareaNombreSafe} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${notaExtra ? " • " + notaExtra : ""} ${token}`.trim();
+
+    await updateGasto(ligado.id, {
+      fecha: payload.fecha,
+      monto: totalMO,
+      empleadoId: payload.empleadoId,
+      empleadoNombre: empNombreSafe,
+      // (opcional) método/categoría si quieres forzarlo
+      categoriaNombre: "Mano de obra",
+      categoria: "Mano de obra",
+      nota: notaNueva,
+      _source: "manoobra",
+      _sourceId: moId,
+      source: "manoobra",
+      sourceId: moId,
+    });
+  }
+} catch (e) {
+  console.warn("No pude actualizar el gasto ligado de mano de obra:", e);
+}
+    exitEditManoObra();
+
+    // 2) optimistic cache: reemplaza
+    const ix = CACHE.manoobra.findIndex(x => String(x.id) === String(moId));
+    const updated = { ...(ix >= 0 ? CACHE.manoobra[ix] : {}), id: moId, ...payload };
+    if (ix >= 0) CACHE.manoobra[ix] = updated;
+    else CACHE.manoobra.unshift(updated);
+
+  } else {
+    // 1) backend add (manoobra)
+    await addManoObra({
+      id: moId,
+      ...payload,
+      createdAt: Date.now(),
+    });
+
+    // 2) optimistic cache: agrega manoobra
+    CACHE.manoobra.unshift({ id: moId, ...payload, createdAt: Date.now() });
+
+    // 3) backend add (gasto automático) + optimistic cache
+    const gastoId = makeId();
+    const empNombreSafe = emp.nombre || "";
+    const tareaNombreSafe = task.nombre || "";
+    const token = `[mo:${moId}]`;
+
+    const gastoObj = {
+      id: gastoId,
+      fecha,
+      monto: totalMO,
+      categoriaNombre: "Mano de obra",
+      categoria: "Mano de obra",
+      metodoPago: "Efectivo",
+      proveedor: "",
+      empleadoId: emp.id || "",
+      empleadoNombre: empNombreSafe,
+      nota: `${empNombreSafe} — ${tareaNombreSafe} • ${round2(dias)}d x ${moneyRD(pagoDia)} = ${moneyRD(totalMO)}${nota ? " • " + nota : ""} ${token}`.trim(),
+      createdAt: Date.now(),
+      _source: "manoobra",
+      _sourceId: moId,
+      source: "manoobra",
+      sourceId: moId,
+    };
+
+    try {
+      await addGasto(gastoObj);
+      CACHE.gastos.unshift(gastoObj);
+    } catch (err) {
+      console.error("No se pudo crear gasto automático:", err);
+      alert("⚠️ Mano de obra se guardó, pero el gasto automático falló.");
+    }
+  }
+
+  // render con lo que ya tienes
+  await renderManoObraSimple({ force: true });
+await renderGastos({ force: true });
+scheduleDashboardSafe?.({ force: true });
+
+  // sincroniza en background (sin bloquear)
+  setTimeout(() => {
+    refreshCache("manoobra", { force: true }).catch(()=>{});
+    refreshCache("gastos", { force: true }).catch(()=>{});
+  }, 500);
+
+  alert(isEdit ? "✅ Mano de obra actualizada" : "✅ Mano de obra guardada");
+
+  // reset
+  form.reset();
+  const mf = document.getElementById("moFecha");
+  if (mf) mf.value = todayISO();
+});
 }
 
-
-async function renderManoObraSimple() {
+async function renderManoObraSimple(opts = {}) {
   const ul = document.getElementById("moList");
   if (!ul) return;
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  const arr = (await getManoObra()) || [];
-  if (!arr.length) {
-    ul.innerHTML = "<li>No hay mano de obra.</li>";
+  let arr = [];
+  try {
+    // si tu getManoObra ya usa apiGet + cache, esto es suficiente
+    arr = await getManoObra(opts);
+  } catch (e) {
+    console.error("getManoObra failed:", e);
+    ul.innerHTML = "<li>❌ Error cargando mano de obra.</li>";
     return;
   }
 
-  ul.innerHTML = "";
-  const limit = LIST_LIMITS.manoobra || 10;
-  arr.slice(0, limit).forEach(m => {
-    const li = document.createElement("li");
-    li.className = "ventaItem";
+    if (!arr || !arr.length) {
+  ul.innerHTML = "<li>No hay registros.</li>";
+  return;
+}
 
-  li.innerHTML = `
-  <div class="itemTop">
-    <strong>👷 ${escapeHtml(m.empleadoNombre || "")} — ${escapeHtml(fmtDate(m.fecha))}</strong>
-    <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
-  </div>
-
-  <div class="muted">
-    💰 ${moneyRD(toMoneyNumber(m.total ?? (Number(m.horas||0)*Number(m.pagoDia||0))))}
-  </div>
-
-  <div class="muted">
-    ${escapeHtml(m.tareaNombre || "")} • ${Number(m.horas || 0).toFixed(2)} d
-  </div>
-
-  ${m.nota ? `<div class="ventaNota">${escapeHtml(m.nota)}</div>` : ""}
-`;
-
-
-
-    const delBtn = li.querySelector(".btnDelete");
-    delBtn?.addEventListener("click", async (ev) => {
-  ev.stopPropagation();
-  await deleteItem("manoobra", m.id);
+const sorted = [...arr].sort((a, b) => {
+  const da = new Date(a.fecha || a.createdAt || 0).getTime();
+  const db = new Date(b.fecha || b.createdAt || 0).getTime();
+  return db - da;
 });
 
+ul.innerHTML = "";
+const limit = LIST_LIMITS.manoobra || 10;
 
+sorted.slice(0, limit).forEach((m) => {
+    const li = document.createElement("li");
+    li.className = "ventaItem manoItem";
     li.style.cursor = "pointer";
     li.title = "Click para editar";
+
+    const fechaTxt = formatFechaES(m.fecha || m.createdAt);
+
+    // en tu app "horas" = días
+    const dias = Number(m.horas || 0);
+    const pagoDia = Number(m.pagoDia || 0);
+
+    // si la hoja no tiene total, lo calculamos
+    const totalNum = Number(m.total || 0) || round2(dias * pagoDia);
+
+    const empTxt = String(m.empleadoNombre || "").trim();
+    const tareaTxt = String(m.tareaNombre || "").trim();
+    const notaTxt = String(m.nota || "").trim();
+
+    li.innerHTML = `
+      <div class="itemTop">
+        <strong>👷 ${escapeHtml(empTxt || "Empleado")}</strong>
+        <span class="muted">${escapeHtml(fechaTxt)}</span>
+        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
+      </div>
+
+      <div class="muted">
+        ${escapeHtml(tareaTxt || "Tarea")} • 
+        <strong>${escapeHtml(String(dias))}d</strong> x ${escapeHtml(moneyRD(pagoDia))} 
+        = <strong>${escapeHtml(moneyRD(totalNum))}</strong>
+      </div>
+
+      ${notaTxt ? `<div class="ventaNota">${escapeHtml(notaTxt)}</div>` : ""}
+    `;
+
+    // ✅ BORRAR (manoobra + gasto ligado)
+    li.querySelector(".btnDelete")?.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+
+      if (!confirm("¿Borrar este registro de mano de obra?")) return;
+
+      try {
+        // 1) borra mano de obra
+        await deleteItem("manoobra", m.id);
+
+        // 2) borra SOLO el gasto automático ligado a este m.id
+        // 2) borra SOLO el gasto automático ligado a este m.id
+try {
+  console.log("MO delete: antes de buscar gastos", { moId: m.id });
+
+  const gastos = await getGastos({ force: true });
+
+  console.log("MO delete: gastos cargados", { n: (gastos || []).length });
+
+  const token = `[mo:${m.id}]`;
+
+const ligados = (gastos || []).filter((g) =>
+  (
+    String(g._source ?? g.source ?? "") === "manoobra" &&
+    String(g._sourceId ?? g.sourceId ?? "") === String(m.id)
+  ) ||
+  String(g.nota || "").includes(token) ||
+  String(g.proveedor || "").includes(token)
+);
+
+
+  console.log("MO delete: ligados encontrados", ligados);
+
+  for (const g of ligados) {
+    const r = await apiPost({ type: "gastos", action: "delete", id: g.id });
+    console.log("MO delete: borrando gasto", { gastoId: g.id, resp: r });
+  }
+} catch (e2) {
+  console.error("MO delete: fallo borrando gastos ligados", e2);
+}
+
+             // 3) refresca caches + UI
+        await refreshCache("manoobra", { force: true });
+        await refreshCache("gastos", { force: true });
+
+        await renderManoObraSimple({ force: true });
+        await renderGastos({ force: true });
+
+        scheduleDashboardSafe?.({ force: true });
+
+      } catch (err) {
+        console.error("Delete manoobra failed:", err);
+        alert("❌ No se pudo borrar. Revisa consola.");
+      }
+    });
+
+    // editar
     li.addEventListener("click", () => beginEditManoObra(m));
 
     ul.appendChild(li);
   });
 
-  const btn = ensureLoadMoreBtn(ul, "manoobra", renderManoObraSimple, 10);
-  updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
-
+  // load more
+  const btn = ensureLoadMoreBtn(ul, "manoobra", () => renderManoObraSimple(opts), 10);
+  updateLoadMoreBtn(btn, Math.min(limit, sorted.length), sorted.length, 10);
 }
+
 
 
 
@@ -1913,10 +2507,12 @@ if (EDIT?.tipo === "venta" && EDIT?.id) {
     if (elBalance) elBalance.value = "";
     if (elPreview) { elPreview.src = ""; elPreview.style.display = "none"; }
 
-    await renderVentas();
+    await refreshCache("ventas", { force: true });
+    await renderVentas({ force: true });
+
     // Dashboard ahora está en Mensual; lo renderizamos solo si esa vista está activa
     if (document.getElementById("viewMensual")?.classList.contains("activeView")) {
-      if (typeof renderDashboard === "function") await renderDashboard();
+      if (typeof renderDashboard === "function") await renderDashboard({ force: true });
     }
     document.getElementById("ventaNewClienteBox")?.style && (document.getElementById("ventaNewClienteBox").style.display = "none");
   });
@@ -1998,6 +2594,11 @@ async function renderVentas(opts = {}) {
   // usa cache
   await warmCache(opts);
   const arr = (CACHE.ventas || []);
+  const sorted = [...arr].sort((a, b) => {
+  const da = new Date(a.fecha || a.createdAt || 0).getTime();
+  const db = new Date(b.fecha || b.createdAt || 0).getTime();
+  return db - da; // más nuevo primero
+});
 
   if (!arr.length) {
     list.innerHTML = "<li>No hay ventas.</li>";
@@ -2007,7 +2608,7 @@ async function renderVentas(opts = {}) {
   list.innerHTML = "";
   const frag = document.createDocumentFragment();
   const limit = LIST_LIMITS.ventas || 10;
-  arr.slice(0, limit).forEach(v => {
+  sorted.slice(0, limit).forEach(v => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
@@ -2204,6 +2805,7 @@ function hookAplicaciones() {
   const form = document.getElementById("appForm");
   if (!form) return;
 
+  
   // fecha default
   const f = document.getElementById("appFecha");
   if (f && !f.value) f.value = todayISO();
@@ -2251,9 +2853,17 @@ document.getElementById("appSaveNewZona")?.addEventListener("click", async () =>
   if (descEl) descEl.value = "";
 });
 
-  // submit
-  form.addEventListener("submit", saveAplicacion);
+ // submit (con lock + texto "Guardando…")
+ withSubmitLock("appForm", async () => {
+  const form = document.getElementById("appForm");
+  const btn = form?.querySelector("button[type='submit']");
+
+  await withButtonLoading(btn, async () => {
+  await saveAplicacion(new Event("submit"));
+}, { loadingText: "Guardando…" });
+});
 }
+
 
 async function saveAplicacion(e) {
   e.preventDefault();
@@ -2263,7 +2873,8 @@ async function saveAplicacion(e) {
   const zonaId = zonaEl?.value || "";
   const zonaNombre = zonaEl?.selectedOptions?.[0]?.textContent || "";
 
-  const producto = (document.getElementById("appProducto")?.value || "").trim();
+  const producto = (document.getElementById("appProducto")?.value || "").trim();  
+ 
   const tipo = document.getElementById("appTipo")?.value || "";
   const dosis = (document.getElementById("appDosis")?.value || "").trim();
   const costo = Number(document.getElementById("appCosto")?.value || 0);
@@ -2327,8 +2938,21 @@ function beginEditAplicacion(a) {
   const zonaEl = document.getElementById("appZona");
   if (zonaEl) zonaEl.value = a.zonaId || "";
 
-  const producto = document.getElementById("appProducto");
-  if (producto) producto.value = a.producto || "";
+  const productoSel = document.getElementById("appProducto");
+if (productoSel) {
+  const val = String(a.producto || "").trim();
+
+  // si no existe en el dropdown, lo agregamos para poder editar sin perderlo
+  if (val && ![...productoSel.options].some(o => o.value === val)) {
+    const opt = document.createElement("option");
+    opt.value = val;
+    opt.textContent = val;
+    productoSel.appendChild(opt);
+  }
+
+  productoSel.value = val;
+}
+
 
   const tipo = document.getElementById("appTipo");
   if (tipo) tipo.value = a.tipo || "";
@@ -2358,16 +2982,22 @@ async function renderAplicaciones() {
 
   ul.innerHTML = "<li>Cargando…</li>";
 
-  const arr = (await getAplicaciones()) || [];
-  if (!arr.length) {
-    ul.innerHTML = "<li>No hay aplicaciones.</li>";
-    return;
-  }
+    const arr = (await getAplicaciones()) || [];
+if (!arr.length) {
+  ul.innerHTML = "<li>No hay aplicaciones.</li>";
+  return;
+}
 
-  ul.innerHTML = "";
-  const limit = LIST_LIMITS.aplicaciones || 10;
+const sorted = [...arr].sort((a, b) => {
+  const da = new Date(a.fecha || a.createdAt || 0).getTime();
+  const db = new Date(b.fecha || b.createdAt || 0).getTime();
+  return db - da;
+});
 
-  arr.slice(0, limit).forEach(a => {
+ul.innerHTML = "";
+const limit = LIST_LIMITS.aplicaciones || 10;
+
+sorted.slice(0, limit).forEach(a => {
     const li = document.createElement("li");
     li.className = "ventaItem";
 
@@ -2405,11 +3035,441 @@ async function renderAplicaciones() {
   });
 
   const btn = ensureLoadMoreBtn(ul, "aplicaciones", renderAplicaciones, 10);
-  updateLoadMoreBtn(btn, Math.min(limit, arr.length), arr.length, 10);
+  updateLoadMoreBtn(btn, Math.min(limit, sorted.length), sorted.length, 10);
 }
 
+// ===============================
+// INVENTARIO (Movimientos) - HOOK + CRUD UI
+// Requiere en storage.js:
+// - getInventarioItems, addInventarioItem
+// - getInventarioMov, addInventarioMov, updateInventarioMov
+// Borrado usa tu deleteItem("inventario_mov", id)
+// ===============================
+
+// Estado edición inventario
+function exitEditInventario() {
+  EDIT = { tipo: null, id: null };
+
+  const sb = document.querySelector("#invForm button[type='submit']");
+  if (sb) sb.textContent = "Guardar movimiento";
+
+  const cb = document.querySelector("#invForm .btnCancelEdit");
+  if (cb) cb.style.display = "none";
+
+  const form = document.getElementById("invForm");
+  form?.reset();
+
+  const f = document.getElementById("invFecha");
+  if (f) f.value = todayISO();
+
+  const box = document.getElementById("invNewItemBox");
+  if (box) box.style.display = "none";
+}
+
+// Debounce local para dashboard (NO usa scheduleDashboard)
+let _invDashTimer = null;
+function scheduleDashboardSafe(opts = {}) {
+  clearTimeout(_invDashTimer);
+  _invDashTimer = setTimeout(() => {
+    if (typeof renderDashboard === "function") {
+      renderDashboard(opts).catch(() => {});
+    }
+  }, 250);
+}
+
+function scheduleDashboard(opts = {}) {
+  return scheduleDashboardSafe?.(opts);
+}
+
+async function loadInvItems(preselectId = "", opts = {}) {
+  const sel = document.getElementById("invItem");
+  if (!sel) return;
+
+  const prev = preselectId || sel.value || "";
+
+  let items = [];
+  try {
+    items = await getInvItemsCached(opts); // ✅ usa opts
+  } catch (e) {
+    console.warn("getInventarioItems failed:", e);
+    items = [];
+  }
+
+  sel.innerHTML =
+    `<option value="">Selecciona…</option>
+     <option value="__NEW__">➕ Nuevo…</option>` +
+    (items || [])
+      .filter(it => String(it.activo ?? "1") !== "0")
+      .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es"))
+      .map(it => `<option value="${escapeHtml(it.id)}">${escapeHtml(it.nombre || "")}</option>`)
+      .join("");
+
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  else sel.value = "";
+}
+
+async function loadAppProductosFromInventario(preselect = "", opts = {}) {
+  const sel = document.getElementById("appProducto");
+  if (!sel) return;
+
+  let items = [];
+  try {
+    // ✅ usa cache por defecto (rápido). Solo force si tú lo pides.
+    items = await getInvItemsCached({ force: !!opts.force });
+  } catch (e) {
+    console.warn("getInvItemsCached para appProducto falló:", e);
+    items = [];
+  }
+
+  const insumos = (items || [])
+    .filter(it => String(it.activo ?? "1") !== "0")
+    .filter(it => String(it.tipo || "").trim().toLowerCase() === "insumo")
+    .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es"));
+
+  sel.innerHTML =
+    `<option value="">Selecciona…</option>` +
+    insumos
+      .map(it => `<option value="${escapeHtml(it.nombre || "")}">${escapeHtml(it.nombre || "")}</option>`)
+      .join("");
+
+  if (preselect && [...sel.options].some(o => o.value === preselect)) {
+    sel.value = preselect;
+  }
+}
+
+async function beginEditInventario(m) {
+  EDIT = { tipo: "inv", id: m.id };
+  await loadInvItems(String(m.itemId || "").trim());
+
+  const f = document.getElementById("invFecha");
+  if (f) {
+    const s = String(m.fecha || "");
+    f.value = s.includes("T") ? s.slice(0, 10) : (s.includes(" ") ? s.split(" ")[0] : s);
+  }
+
+  // item
+  const sel = document.getElementById("invItem");
+  if (sel) {
+    const id = String(m.itemId || "").trim();
+    if ([...sel.options].some(o => o.value === id)) sel.value = id;
+  }
+
+  // tipo/cantidad/costo/nota
+  const tipoEl = document.getElementById("invTipo");
+  if (tipoEl) tipoEl.value = m.tipoMov || "Entrada";
+
+  const cantEl = document.getElementById("invCantidad");
+  if (cantEl) cantEl.value = (m.cantidad ?? "");
+
+  const costoEl = document.getElementById("invCosto");
+  if (costoEl) costoEl.value = (m.costoTotal ?? "");
+
+  const notaEl = document.getElementById("invNota");
+  if (notaEl) notaEl.value = (m.nota || "").trim();
+
+  // UI
+  const sb = document.querySelector("#invForm button[type='submit']");
+  if (sb) sb.textContent = "Guardar cambios";
+
+  const cb = document.querySelector("#invForm .btnCancelEdit");
+  if (cb) cb.style.display = "inline-block";
+
+  document.getElementById("invForm")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function renderInventario(opts = {}) {
+  const ul = document.getElementById("invList");
+  if (!ul) return;
+
+  ul.innerHTML = "<li>Cargando…</li>";
+
+  let arr = [];
+  try {
+    arr = await getInventarioMov(opts);
+  } catch (e) {
+    console.error("getInventarioMov failed:", e);
+    ul.innerHTML = "<li>❌ Error cargando inventario.</li>";
+    return;
+  }
+
+  const items = Array.isArray(INV_ITEMS_CACHE) ? INV_ITEMS_CACHE : [];
+
+    if (!arr || !arr.length) {
+  ul.innerHTML = "<li>No hay movimientos.</li>";
+  return;
+}
+
+const sorted = [...arr].sort((a, b) => {
+  const da = new Date(a.fecha || a.createdAt || 0).getTime();
+  const db = new Date(b.fecha || b.createdAt || 0).getTime();
+  return db - da;
+});
+
+ul.innerHTML = "";
+const limit = LIST_LIMITS.inventario_mov || 10;
+
+sorted.slice(0, limit).forEach(m => {
+    const li = document.createElement("li");
+    li.className = "ventaItem";
+    li.style.cursor = "pointer";
+    li.title = "Click para editar";
+
+    const fechaTxt = formatFechaES(m.fecha || m.createdAt);
+    const tipoTxt = String(m.tipoMov || "").trim();
+    const cantTxt = String(m.cantidad ?? 0);
+    const costoNum = Number(m.costoTotal || 0);
+    const itemObj = (items || []).find(it => String(it.id) === String(m.itemId));
+    const unidadTxt = String(itemObj?.unidad || "").trim();
 
 
+    li.innerHTML = `
+      <div class="itemTop">
+        <strong>${escapeHtml(m.itemNombre || "Ítem")}</strong>
+        <span class="muted">${escapeHtml(fechaTxt)}</span>
+        <button type="button" class="btnDanger btnDelete" style="margin-left:10px;">Borrar</button>
+      </div>
+
+      <div class="muted">
+        ${escapeHtml(tipoTxt)} • 
+        <strong>${escapeHtml(cantTxt)}${unidadTxt ? " " + escapeHtml(unidadTxt) : ""}</strong>
+        ${costoNum > 0 ? ` • 💰 ${escapeHtml(moneyRD(costoNum))}` : ""}
+      </div>
+
+      ${m.nota ? `<div class="muted">${escapeHtml(m.nota)}</div>` : ""}
+    `;
+
+    // borrar (sin romper)
+    li.querySelector(".btnDelete")?.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      await deleteItem("inventario_mov", m.id);
+      // refresca lista por si tu deleteItem no tiene este caso
+      try { await renderInventario({ force: true }); } catch {}
+      scheduleDashboardSafe({ force: true });
+    });
+
+    li.addEventListener("click", () => beginEditInventario(m));
+    ul.appendChild(li);
+  });
+
+  // load more
+  const btn = ensureLoadMoreBtn(
+  ul,
+  "inventario_mov",
+  () => renderInventario({ ...opts }),
+  10
+);
+  updateLoadMoreBtn(btn, Math.min(limit, sorted.length), sorted.length, 10);
+}
+
+function hookInventario() {
+  const form = document.getElementById("invForm");
+  if (!form) return;
+
+  // evita duplicar listeners si hookInventario() se llama 2 veces
+  if (form.dataset.hooked === "1") return;
+  form.dataset.hooked = "1";
+
+  const f = document.getElementById("invFecha");
+  if (f && !f.value) f.value = todayISO();
+
+  const invSel = document.getElementById("invItem");
+  const box = document.getElementById("invNewItemBox");
+
+  // Cancelar edición
+  ensureCancelBtn("invForm", () => exitEditInventario());
+
+  // Cargar items
+  
+  // Mostrar/ocultar "Nuevo ítem"
+  invSel?.addEventListener("change", () => {
+    if (!box) return;
+    const isNew = (invSel.value === "__NEW__");
+    box.style.display = isNew ? "block" : "none";
+    if (isNew) document.getElementById("invNewItemNombre")?.focus();
+  });
+
+ // Guardar nuevo ítem
+document.getElementById("invSaveNewItem")?.addEventListener("click", async () => {
+  const box = document.getElementById("invNewItemBox"); // <- asegúrate que exista
+  const nombreEl = document.getElementById("invNewItemNombre");
+  const tipoEl = document.getElementById("invNewItemTipo");
+  const unidadEl = document.getElementById("invNewItemUnidad");
+  const minimoEl = document.getElementById("invNewItemMinimo");
+
+  const nombre = (nombreEl?.value || "").trim();
+  const tipo = (tipoEl?.value || "Insumo").trim();
+  const unidad = (unidadEl?.value || "").trim();
+  const minimo = Number(minimoEl?.value || 0);
+
+  if (!nombre) return alert("Pon el nombre del ítem.");
+
+  // (opcional pero recomendado) evita duplicados por nombre
+  const exists = (Array.isArray(INV_ITEMS_CACHE) ? INV_ITEMS_CACHE : []).some(i =>
+    String(i.nombre || "").trim().toLowerCase() === nombre.toLowerCase()
+  );
+  if (exists) return alert("Ese ítem ya existe.");
+
+  // 1) arma el objeto
+  const newItem = {
+    id: makeId("inv"),
+    nombre,
+    tipo,
+    unidad,
+    minimo: Number.isFinite(minimo) ? round2(minimo) : 0,
+    activo: "1",
+    createdAt: Date.now(),
+  };
+
+  // 2) guarda en Sheets
+  await addInventarioItem(newItem);
+
+  // 3) mete en cache sin re-fetch (CLAVE)
+  INV_ITEMS_CACHE = Array.isArray(INV_ITEMS_CACHE) ? INV_ITEMS_CACHE : [];
+  INV_ITEMS_CACHE.unshift(newItem);
+  INV_ITEMS_LOADED_AT = Date.now();
+
+  // 4) refresca selects (Inventario)
+  // si loadInvItems vuelve a hacer fetch, cámbialo por una función que SOLO rellene el select
+  try { await loadInvItems(newItem.id); } catch {}
+
+ // 5) refresca dropdown de Aplicaciones (CLAVE)
+try { await loadAppProductosFromInventario(newItem.nombre); } catch {}
+
+  // UI reset
+  if (box) box.style.display = "none";
+  if (nombreEl) nombreEl.value = "";
+  if (unidadEl) unidadEl.value = "";
+  if (minimoEl) minimoEl.value = "";
+  if (minimoEl) minimoEl.value = "";
+});
+
+  // Submit movimiento (ADD / UPDATE)
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const btn = form.querySelector("button[type='submit']");
+  const prevTxt = btn?.textContent || "Guardar";
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Guardando…";
+    }
+
+    // ✅ TODO TU CÓDIGO ACTUAL VA AQUÍ (sin cambios)
+    const fecha = normalizeISODate(document.getElementById("invFecha")?.value || "");
+    const itemEl = document.getElementById("invItem");
+    const tipoEl = document.getElementById("invTipo");
+    const cantEl = document.getElementById("invCantidad");
+    const costoEl = document.getElementById("invCosto");
+    const notaEl = document.getElementById("invNota");
+
+    const metodoPagoInv = document.getElementById("invMetodo")?.value || "EFECTIVO";
+
+    if (!fecha) return alert("Fecha inválida.");
+    if (!itemEl) return alert("Falta invItem.");
+    if (!tipoEl) return alert("Falta invTipo.");
+    if (!cantEl) return alert("Falta invCantidad.");
+
+    const itemId = itemEl.value || "";
+    if (!itemId || itemId === "__NEW__") return alert("Selecciona un ítem (o termina de crearlo).");
+
+    const itemNombre = itemEl.selectedOptions?.[0]?.textContent || "";
+    const tipoMov = (tipoEl.value || "Entrada").trim();
+
+    const cantidad = Number(cantEl.value || 0);
+    const costoTotal = Number(costoEl?.value || 0);
+    const nota = (notaEl?.value || "").trim();
+
+    if (!Number.isFinite(cantidad) || cantidad <= 0) return alert("Cantidad debe ser > 0.");
+    if (!Number.isFinite(costoTotal) || costoTotal < 0) return alert("Costo debe ser >= 0.");
+
+    const payload = {
+      fecha,
+      itemId,
+      itemNombre,
+      tipoMov,
+      cantidad: round2(cantidad),
+      costoTotal: round2(costoTotal),
+      nota,
+    };
+
+    if (EDIT?.tipo === "inv" && EDIT?.id) {
+      if (typeof updateInventarioMov !== "function") {
+        return alert("Falta updateInventarioMov() en storage.js");
+      }
+
+      await updateInventarioMov(EDIT.id, { ...payload, id: EDIT.id });
+      exitEditInventario();
+      alert("✅ Movimiento actualizado");
+    } else {
+      if (typeof addInventarioMov !== "function") {
+        return alert("Falta addInventarioMov() en storage.js");
+      }
+
+      const movId = makeId();
+
+      await addInventarioMov({
+        id: movId,
+        ...payload,
+        createdAt: Date.now(),
+      });
+
+      if (String(tipoMov).toLowerCase() === "entrada" && Number(costoTotal) > 0) {
+        try {
+          if (typeof addGasto !== "function") throw new Error("Falta addGasto()");
+
+          const token = `[mov:${movId}]`;
+
+          let unidad = "";
+          try {
+            const allItems = await getInvItemsCached(); // ✅ NO force:true
+            const it = (allItems || []).find((x) => String(x.id) === String(itemId));
+            unidad = String(it?.unidad || "").trim();
+          } catch {}
+
+          const qtyTxt = `${cantidad}${unidad ? " " + unidad : ""}`;
+
+          await addGasto({
+            id: makeId(),
+            fecha,
+            categoriaId: "INSUMOS",
+            categoriaNombre: "Insumos",
+            monto: round2(Number(costoTotal) || 0),
+            metodoPago: metodoPagoInv || "EFECTIVO",
+            proveedor: `Inventario: ${itemNombre || "Ítem"} • ${qtyTxt} ${token}`,
+            nota: (nota ? `${nota} ${token}` : token),
+            createdAt: Date.now(),
+            _source: "inventario_mov",
+            _sourceId: movId,
+          });
+
+          try { await renderGastos?.({ force: true }); } catch {}
+        } catch (e) {
+          console.warn("Auto-gasto falló (movimiento sí se guardó):", e);
+        }
+      }
+
+      alert("✅ Movimiento guardado");
+    }
+
+    await renderInventario({ force: true }).catch(console.error);
+    scheduleDashboardSafe({ force: true });
+
+    form.reset();
+    if (f) f.value = todayISO();
+
+  } catch (err) {
+    console.error("inv submit error:", err);
+    alert("❌ Error guardando: " + (err?.message || err));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = prevTxt;
+    }
+  }
+});
+}
 
 // ---------- DASHBOARD (incluye categorías + mensual) ----------
 async function renderDashboard(opts = {}) {
@@ -2493,8 +3553,7 @@ async function renderDashboard(opts = {}) {
   // Gastos por categoría (igual que ya tienes)
   const catMap = {};
 
-
-gastos.forEach(g => {
+  gastos.forEach(g => {
   if (monthKeyFromAnyDate(g.fecha) !== mes) return;
 
   const catRaw = (g.categoriaNombre || g.categoria || "Sin categoría");
@@ -2503,10 +3562,12 @@ gastos.forEach(g => {
 
   catMap[cat] = (catMap[cat] || 0) + monto;
 
-  // ✅ capturar estas 2 categorías desde gastos
+  // ✅ capturar SOLO mano de obra desde gastos
   const k = cat.toLowerCase();
   if (k === "mano de obra" || k === "manoobra") tMO += monto;
-  if (k === "aplicaciones" || k === "aplicacion" || k === "aplicaciones ") tApps += monto;
+
+  // ❌ NO sumar aplicaciones desde gastos (para evitar doble conteo)
+  // if (k === "aplicaciones" || k === "aplicacion" || k === "aplicaciones ") tApps += monto;
 });
 
 

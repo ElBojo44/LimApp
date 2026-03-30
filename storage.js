@@ -19,6 +19,16 @@ async function apiGet(type, opts = {}) {
   if (!t) return [];
   const force = !!opts.force;
 
+  // 🔥 SI YA TENEMOS BOOTSTRAP, NO PEGUES AL BACKEND
+  if (!force) {
+  try {
+    if (typeof CACHE !== "undefined" && CACHE && Array.isArray(CACHE[t])) return CACHE[t];
+    if (t === "inventario_items" && typeof INV_ITEMS_CACHE !== "undefined" && Array.isArray(INV_ITEMS_CACHE)) {
+      return INV_ITEMS_CACHE;
+    }
+  } catch {}
+}
+
   const now = Date.now();
   const hit = GET_CACHE.get(t);
 
@@ -32,8 +42,8 @@ async function apiGet(type, opts = {}) {
     return hit.promise;
   }
 
-  const url = `${API_URL}?type=${encodeURIComponent(t)}&t=${Date.now()}`; // cache buster (server)
-  const p = fetch(url, { method: "GET", redirect: "follow", cache: "no-store" })
+  const url = `${API_URL}?type=${encodeURIComponent(t)}`;
+  const p = fetch(url, { method: "GET", redirect: "follow" })
     .then(async (res) => {
       if (!res.ok) throw new Error(`GET ${t} failed: ${res.status}`);
       const json = await res.json();
@@ -59,13 +69,10 @@ async function apiGet(type, opts = {}) {
 async function apiPostBody(bodyObj) {
   const res = await fetch(API_URL, {
     method: "POST",
-    // Con Worker ya NO necesitamos "text/plain" para evitar CORS.
-    // Pero si tú prefieres dejarlo en text/plain, igual funciona.
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(bodyObj || {}),
   });
 
-  // Leemos como texto primero para poder loggear si viene HTML.
   const text = await res.text();
   let json;
   try {
@@ -77,14 +84,24 @@ async function apiPostBody(bodyObj) {
 
   if (!res.ok) throw new Error(json?.error || `POST failed: ${res.status}`);
   if (!json.ok) {
-  console.error("POST response:", json);
-  throw new Error(json.error || "POST error");
-}
+    console.error("POST response:", json);
+    throw new Error(json.error || "POST error");
+  }
 
-  // Invalidate GET cache for this type so next UI refresh is instant + correct
+  // ✅ Invalida caches para que el próximo GET traiga lo nuevo
   try { invalidateGetCache(bodyObj?.type); } catch {}
+
+  try {
+    if (typeof CACHE !== "undefined" && CACHE && bodyObj?.type) {
+      // importante: ponlo en [] (no null) para no romper Array.isArray
+      CACHE[bodyObj.type] = [];
+      CACHE.loadedAt = 0;
+    }
+  } catch {}
+
   return json;
 }
+
 
 // ✅ Compat: soporta ambas firmas
 // 1) apiPost(type, data)
@@ -288,16 +305,18 @@ function _writeArr(key, arr) {
   localStorage.setItem(key, JSON.stringify(arr || []));
 }
 
-// Categorías de gastos (local)
-async function getGastoCategorias() {
-  return _readArr(KEY_GASTO_CATS);
+// Categorías de gastos (Sheets)
+async function getGastoCategorias(opts = {}) {
+  const force = !!opts.force;
+  return apiGet("gasto_categorias", { force });
 }
 
 async function addGastoCategoria(cat) {
-  const arr = _readArr(KEY_GASTO_CATS);
-  arr.unshift(cat);
-  _writeArr(KEY_GASTO_CATS, arr);
-  return cat;
+  return apiPostBody({
+    type: "gasto_categorias",
+    action: "add",
+    data: cat,
+  });
 }
 
 // Gastos LOCAL (si algún día quieres ver lo que se guardó solo en el device)
@@ -368,3 +387,90 @@ async function updateManoObra(id, patch) {
     data: { id, ...(patch || {}) },
   });
 }
+
+// ===============================
+// Inventario
+// ===============================
+
+// ===============================
+// Inventario ITEMS (Sheets)
+// ===============================
+async function getInventarioItems(opts = {}) {
+  const rows = await apiGet("inventario_items", opts);
+  return rows
+    .map(it => ({
+      ...it,
+      minimo: Number(it.minimo) || 0,
+      createdAt: Number(it.createdAt) || 0,
+      activo: String(it.activo ?? "1"),
+    }))
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
+}
+
+async function addInventarioItem(item) {
+  await apiPost("inventario_items", item);
+}
+
+async function updateInventarioItem(id, patch) {
+  return apiPostBody({
+    type: "inventario_items",
+    action: "update",
+    id,
+    data: { id, ...(patch || {}) },
+  });
+}
+
+
+// ===============================
+// Inventario MOV (Sheets)
+// ===============================
+async function getInventarioMov(opts = {}) {
+  const rows = await apiGet("inventario_mov", opts);
+  return rows
+    .map(m => ({
+      ...m,
+      cantidad: Number(m.cantidad) || 0,
+      costoTotal: Number(m.costoTotal) || 0,
+      createdAt: Number(m.createdAt) || 0,
+    }))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function addInventarioMov(mov) {
+  await apiPost("inventario_mov", mov);
+}
+
+async function updateInventarioMov(id, patch) {
+  return apiPostBody({
+    type: "inventario_mov",
+    action: "update",
+    id,
+    data: { id, ...(patch || {}) },
+  });
+}
+
+async function deleteSheetItem(type, id) {
+  return deleteItemById(type, id);
+}
+
+async function apiBootstrap() {
+  const url = `${API_URL}?bootstrap=1&t=${Date.now()}`;
+  const r = await fetch(url, { cache: "no-store" });
+  const j = await r.json();
+  if (!j?.ok) throw new Error(j?.error || "bootstrap failed");
+
+  const data = j.data || {};
+  try {
+    Object.keys(data).forEach(k => {
+      GET_CACHE.set(k, { ts: Date.now(), data: data[k] });
+    });
+  } catch {}
+
+  return data;
+}
+
+
+
+
+
+
